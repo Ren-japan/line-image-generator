@@ -1,0 +1,7 @@
+.env
+service-account-key.json
+__pycache__/
+*.pyc
+output/
+.streamlit/secrets.toml
+.DS_Store
