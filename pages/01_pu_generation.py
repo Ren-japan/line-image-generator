@@ -252,15 +252,28 @@ if st.session_state.pu_proposals:
     # =============================================================
     st.subheader("Step 4: 生成設定")
 
-    size_col1, size_col2, size_col3 = st.columns(3)
-    with size_col1:
-        pu_width = st.number_input("幅(px)", min_value=256, max_value=4096, value=1080, step=10, key="pu_width")
-    with size_col2:
-        pu_height = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1080, step=10, key="pu_height")
+    # サイズプリセット選択
+    size_preset = st.radio(
+        "サイズ",
+        options=["縦長 (682×1024)", "スクエア (1080×1080)", "横長 (1200×630)", "カスタム"],
+        horizontal=True,
+        index=0,  # デフォルト: 縦長
+        key="pu_size_preset",
+    )
+    if size_preset.startswith("縦長"):
+        pu_width, pu_height = 682, 1024
+    elif size_preset.startswith("スクエア"):
+        pu_width, pu_height = 1080, 1080
+    elif size_preset.startswith("横長"):
+        pu_width, pu_height = 1200, 630
+    else:  # カスタム
+        c_size1, c_size2 = st.columns(2)
+        with c_size1:
+            pu_width = st.number_input("幅(px)", min_value=256, max_value=4096, value=682, step=10, key="pu_width")
+        with c_size2:
+            pu_height = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1024, step=10, key="pu_height")
 
     # アスペクト比自動算出
-    from math import gcd
-    g = gcd(pu_width, pu_height)
     target_ratio = pu_width / pu_height
     best_ar = "1:1"
     min_diff = float("inf")
@@ -270,8 +283,7 @@ if st.session_state.pu_proposals:
         if diff < min_diff:
             min_diff = diff
             best_ar = ar
-    with size_col3:
-        st.caption(f"アスペクト比(自動): **{best_ar}**")
+    st.caption(f"出力サイズ: **{pu_width}×{pu_height}px** / アスペクト比(自動): **{best_ar}**")
 
     selected_count = sum(1 for s in pu_selected if s)
     st.divider()

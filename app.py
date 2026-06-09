@@ -64,10 +64,11 @@ pages = st.navigation(
         "メイン": [
             st.Page("pages/01_pu_generation.py", title="PU画像生成", icon="📣", default=True),
             st.Page("pages/02_carousel_generation.py", title="カルーセル生成", icon="🎠"),
+            st.Page("pages/03_pr_generation.py", title="PR画像生成（URL→トンマナ）", icon="🎯"),
         ],
         "設定": [
-            st.Page("pages/03_site_settings.py", title="サイト設定", icon="⚙️"),
-            st.Page("pages/04_preset_management.py", title="プリセット管理", icon="🎨"),
+            st.Page("pages/04_site_settings.py", title="サイト設定", icon="⚙️"),
+            st.Page("pages/05_preset_management.py", title="プリセット管理", icon="🎨"),
         ],
     }
 )

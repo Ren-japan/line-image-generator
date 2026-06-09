@@ -1244,3 +1244,138 @@ def render_carousel_slide_prompt(
         image_width=image_width,
         image_height=image_height,
     )
+
+
+# =============================================================
+# LINE版: PR画像 用テンプレート
+# 遷移先LPのトンマナにスタイル合わせ。参照画像はLPのog:image+主要img
+# =============================================================
+
+PR_PROPOSAL_TEMPLATE = """あなたはLINEマーケのコピーライターです。
+遷移先LPの商品/サービスに合わせて、PRバナー文言案を1〜3パターン考えてください。
+
+== 商品/サービス情報（任意入力）==
+{product_info}
+
+== LP情報（自動取得）==
+- ページタイトル: {page_title}
+- OG Title: {og_title}
+- OG Description: {og_description}
+
+== 出力形式（JSON配列で必ず出力） ==
+```json
+[
+  {{
+    "headline": "ヘッドライン（最大18文字。商品の核心メリットを1文で）",
+    "subcopy": "サブコピー（最大20文字。ヘッドラインを補強）",
+    "cta_text": "CTAボタン文言（最大10文字。例: 詳細を見る、無料で試す、公式サイトへ）",
+    "visual_description": "主題ビジュアルの描写（商品やシーン）"
+  }}
+]
+```
+
+== ルール ==
+- LPの遷移後にユーザーが「同じバナーだ」と認識できる連続性を意識
+- ヘッドラインは商品の核心メリットをストレートに
+- 抽象的な「最高」「最強」よりも具体的なベネフィットを優先
+- CTAは行動を明確に促す動詞ベース
+"""
+
+
+PR_GENERATION_WITH_REF_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+この画像は{image_width}×{image_height}pxで使用される。
+
+添付の参照画像（遷移先LPの実画像）と同じビジュアルスタイル・配色・トンマナで、商品/サービスのPR用バナー画像を作成してください。
+
+【最重要原則】
+参照画像のテイスト（色・フォント・装飾・人物スタイル・カード形状・全体の雰囲気）を完全にコピーすること。
+LP遷移後にユーザーが「このバナーで見たものだ」と認識できる視覚的連続性を保つこと。
+参照画像に存在しないブランドロゴや別商品の写真を勝手に追加しないこと。
+
+{color_instruction}
+
+== 差し替えるテキスト内容 ==
+- ヘッドライン（最も大きい）: 「{headline}」
+- サブコピー: 「{subcopy}」
+- CTAボタン: 「{cta_text}」
+- 主題ビジュアル（中央 or 背景）: {visual_description}
+
+== 厳守ルール ==
+- 上記「」内の文字列を一字一句そのまま描画
+- 参照画像のトンマナを最優先（テキストの装飾・配色も参照画像準拠）
+- テキストは{language}のみ
+- CTAボタンは必ず1つだけ描画（重複させない）
+- 商品名やブランド名は「{headline}」「{visual_description}」に含まれる範囲のみ
+"""
+
+
+PR_GENERATION_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+
+LINEマーケ用のPRバナー画像を作成してください。
+
+== 配色 ==
+{color_instruction}
+
+== レイアウト（厳守） ==
+画像サイズ: {image_width}×{image_height}px
+
+上部:  [ヘッドライン]（最も大きい、画像高さの10%相当フォント）
+中央上: [サブコピー]（画像高さの5%相当フォント）
+中央:   [主題ビジュアル]（商品/シーン）
+下部:   [CTAボタン]（テーマカラー塗り、白文字、角丸ピル型、1つだけ）
+
+== テキスト内容 ==
+- ヘッドライン: 「{headline}」
+- サブコピー: 「{subcopy}」
+- CTAボタン: 「{cta_text}」
+- 主題ビジュアル: {visual_description}
+
+== 厳守 ==
+- 「はい/いいえ」型ではなく、行動を促す1つのボタンのみ
+- テキストは{language}で記述、太めのゴシック体
+"""
+
+
+def render_pr_proposal_prompt(product_info: str, page_title: str = "",
+                              og_title: str = "", og_description: str = "") -> str:
+    """PR文言案提案プロンプトを生成"""
+    return PR_PROPOSAL_TEMPLATE.format(
+        product_info=product_info or "（特定なし。LP情報から推測）",
+        page_title=page_title or "（取得失敗 or 未取得）",
+        og_title=og_title or "（なし）",
+        og_description=og_description or "（なし）",
+    )
+
+
+def render_pr_generation_prompt(
+    pr_proposal: dict,
+    site_colors: dict | None = None,
+    language: str = "Japanese",
+    has_reference_images: bool = False,
+    image_width: int = 682,
+    image_height: int = 1024,
+) -> str:
+    """PR生成プロンプトを組み立てる"""
+    if has_reference_images:
+        color_instruction = _build_line_color_instruction(site_colors, minimal=True)
+        return PR_GENERATION_WITH_REF_TEMPLATE.format(
+            color_instruction=color_instruction,
+            headline=pr_proposal.get("headline", "").strip(),
+            subcopy=pr_proposal.get("subcopy", "").strip(),
+            cta_text=pr_proposal.get("cta_text", "").strip(),
+            visual_description=pr_proposal.get("visual_description", "").strip(),
+            language=language,
+            image_width=image_width,
+            image_height=image_height,
+        )
+    color_instruction = _build_line_color_instruction(site_colors)
+    return PR_GENERATION_TEMPLATE.format(
+        color_instruction=color_instruction,
+        headline=pr_proposal.get("headline", "").strip(),
+        subcopy=pr_proposal.get("subcopy", "").strip(),
+        cta_text=pr_proposal.get("cta_text", "").strip(),
+        visual_description=pr_proposal.get("visual_description", "").strip(),
+        language=language,
+        image_width=image_width,
+        image_height=image_height,
+    )

@@ -269,13 +269,26 @@ if st.session_state.carousel_proposals:
     # =============================================================
     st.subheader("Step 4: 生成設定")
 
-    sc1, sc2, sc3 = st.columns(3)
-    with sc1:
-        c_width = st.number_input("幅(px)", min_value=256, max_value=4096, value=1080, step=10, key="c_width")
-    with sc2:
-        c_height = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1080, step=10, key="c_height")
+    size_preset = st.radio(
+        "サイズ（全スライド共通）",
+        options=["縦長 (682×1024)", "スクエア (1080×1080)", "横長 (1200×630)", "カスタム"],
+        horizontal=True,
+        index=0,
+        key="c_size_preset",
+    )
+    if size_preset.startswith("縦長"):
+        c_width, c_height = 682, 1024
+    elif size_preset.startswith("スクエア"):
+        c_width, c_height = 1080, 1080
+    elif size_preset.startswith("横長"):
+        c_width, c_height = 1200, 630
+    else:
+        cs1, cs2 = st.columns(2)
+        with cs1:
+            c_width = st.number_input("幅(px)", min_value=256, max_value=4096, value=682, step=10, key="c_width")
+        with cs2:
+            c_height = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1024, step=10, key="c_height")
 
-    from math import gcd
     target_ratio = c_width / c_height
     best_ar = "1:1"
     min_diff = float("inf")
@@ -285,8 +298,7 @@ if st.session_state.carousel_proposals:
         if diff < min_diff:
             min_diff = diff
             best_ar = ar
-    with sc3:
-        st.caption(f"アスペクト比(自動): **{best_ar}**")
+    st.caption(f"出力サイズ: **{c_width}×{c_height}px** / アスペクト比(自動): **{best_ar}**")
 
     total_slides = 2 + len(questions)
     st.divider()
