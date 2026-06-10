@@ -1,20 +1,33 @@
 """
-PR画像生成ページ
-遷移先LPのURL入力 → og:image+主要画像で参照画像セット → 商品情報入力 → 文言案 → PR画像生成
+PR画像カルーセル生成ページ（6-7枚セット）
 
-サイト/案件は任意。URLからLPのトンマナを取れるので、サイト未登録でも動く。
+knowledge/pr-design-patterns.md の暗黙知に基づく設計。
+PR=複数枚で1ストーリーが前提（1枚生成じゃない）。
+
+パイプライン:
+1. URL → og:image取得（LP色味の参照）
+2. デザイン参照画像セット → Gemini Visionで構造抽出（テキストは捨て、構造のみ）
+3. 商材情報 + LP情報 → 全N枚の役割別文言を一括設計
+4. 各枚を順次生成（共通骨格・CTA・色味で統一、各枚=役割別コンテンツ）
 """
 
 import io
 import json
 import re
+import zipfile
 import datetime
 import streamlit as st
 from PIL import Image
 
 from lib.gemini_client import GeminiClient, SUPPORTED_ASPECT_RATIOS
 from lib.image_generator import get_image_client, provider_label
-from lib.prompt_templates import render_pr_proposal_prompt, render_pr_generation_prompt
+from lib.prompt_templates import (
+    render_pr_carousel_structure_prompt,
+    render_pr_carousel_content_proposal,
+    render_pr_carousel_slide_generation,
+    PR_DEFAULT_ROLE_SETS,
+    PR_ROLE_DEFINITIONS,
+)
 from lib.image_postprocessor import trim_whitespace, image_to_bytes
 from lib.url_scraper import fetch_lp_reference_images
 
@@ -25,64 +38,58 @@ def get_cm():
 
 
 def _save_to_storage(image, site_name: str, label: str):
-    """生成PR画像をストレージに自動保存"""
     from lib.dependencies import get_output_storage
     storage = get_output_storage()
     safe_label = re.sub(r'[\\/:*?"<>|]', '_', label)[:50]
     date_str = datetime.datetime.now().strftime('%Y-%m-%d_%H%M%S')
-    key = f"generated/{site_name}/pr/{date_str}_{safe_label}.png"
-    img_bytes = image_to_bytes(image)
-    storage.save(key, img_bytes)
+    key = f"generated/{site_name}/pr_carousel/{date_str}_{safe_label}.png"
+    storage.save(key, image_to_bytes(image))
     return key
 
 
-def _parse_pr_proposals(response_text: str) -> list[dict]:
-    """Geminiの応答からPR案JSON配列を抽出"""
+def _extract_json_obj(response_text: str) -> dict | None:
     m = re.search(r"```(?:json)?\s*\n?(.*?)```", response_text, re.DOTALL)
     text = m.group(1).strip() if m else response_text.strip()
-    s = text.find("[")
-    e = text.rfind("]")
+    s, e = text.find("{"), text.rfind("}")
     if s == -1 or e == -1:
-        return []
+        return None
     try:
-        data = json.loads(text[s:e+1])
-        return data if isinstance(data, list) else []
+        return json.loads(text[s:e+1])
     except json.JSONDecodeError:
-        return []
+        return None
 
 
-# ----- セッションステート初期化（PRページ専用追加） -----
+# ----- セッションステート初期化 -----
 for key, default in {
-    "pr_target_url": "",
-    "pr_lp_metadata": {},
-    "pr_lp_reference_images": [],   # PIL Image のリスト
-    "pr_product_info": "",
-    "pr_proposals": [],
-    "pr_selected_proposals": [],
-    "pr_generated_images": [],
-    "pr_generation_in_progress": False,
+    "prc_target_url": "",
+    "prc_lp_metadata": {},
+    "prc_lp_tone_images": [],
+    "prc_design_ref_images": [],
+    "prc_design_structure": None,
+    "prc_product_info": "",
+    "prc_page_count": 6,
+    "prc_roles": list(PR_DEFAULT_ROLE_SETS[6]),
+    "prc_content": None,
+    "prc_generated_images": [],
+    "prc_in_progress": False,
 }.items():
     if key not in st.session_state:
         st.session_state[key] = default
 
-
 # =============================================================
 # ヘッダー
 # =============================================================
-st.title("🎯 PR画像生成")
-st.caption("遷移先LPのURLを入れると、そのLPのトンマナを学習してPRバナーを生成します")
+st.title("🎯 PR画像カルーセル生成")
+st.caption("LPのトンマナ + 過去のヒットPRの構造 = 6-7枚で1ストーリーのPRカルーセルを生成")
 
 if not st.session_state.api_key:
     st.error("Gemini API Keyが設定されていません。サイドバーから入力してください。")
     st.stop()
-
 if st.session_state.image_provider == "openai" and not st.session_state.openai_api_key:
     st.error("画像生成プロバイダが OpenAI ですが OPENAI_API_KEY が未設定です。")
     st.stop()
 
 config = st.session_state.site_config or {}
-
-# サイト選択は任意
 if st.session_state.current_site:
     st.info(
         f"対象サイト: **{config.get('brand_name', st.session_state.current_site)}** ／ "
@@ -90,180 +97,288 @@ if st.session_state.current_site:
     )
 else:
     st.info(
-        f"サイト未選択（PRはサイト未登録でもLPのURLから生成できます）／ "
+        f"サイト未選択（PRカルーセルはサイト未登録でも生成可能）／ "
         f"画像生成: **{provider_label(st.session_state.image_provider)}**"
     )
 
 # =============================================================
-# Step 1: 遷移先LP URL入力
+# Step 1: 遷移先LP URL
 # =============================================================
-st.subheader("Step 1: 遷移先LPのURL")
+st.subheader("Step 1: 遷移先LPのURL（色味・雰囲気の参照）")
 
 target_url = st.text_input(
     "遷移先LPのURL",
-    value=st.session_state.pr_target_url,
-    placeholder="https://例: https://www.dhc.co.jp/goods/foundation",
-    key="input_pr_url",
+    value=st.session_state.prc_target_url,
+    placeholder="例: https://top.dhc.co.jp/shop/ad/bbcream/...",
+    key="prc_input_url",
 )
-st.session_state.pr_target_url = target_url
+st.session_state.prc_target_url = target_url
 
-fetch_col1, fetch_col2 = st.columns([1, 3])
-with fetch_col1:
-    btn_fetch = st.button(
-        "URLから情報取得",
-        type="primary",
-        disabled=not target_url.strip(),
-        use_container_width=True,
-    )
-
-if btn_fetch and target_url.strip():
-    with st.status("LPから情報を取得中...", expanded=True) as status:
+if st.button("URLから情報取得", disabled=not target_url.strip(), use_container_width=False, key="prc_fetch_lp"):
+    with st.status("LPから情報取得中...", expanded=True) as status:
         try:
-            st.write("HTMLとメタ情報を取得...")
             images, metadata = fetch_lp_reference_images(target_url, max_count=5)
-            st.session_state.pr_lp_metadata = metadata
-            st.session_state.pr_lp_reference_images = images
-            st.write(f"画像 {len(images)} 枚取得（og:image優先）")
-            status.update(label=f"取得完了: 画像{len(images)}枚 / タイトル取得OK", state="complete")
+            st.session_state.prc_lp_tone_images = images
+            st.session_state.prc_lp_metadata = metadata
+            status.update(label=f"取得完了: 画像{len(images)}枚 / メタ情報OK", state="complete")
         except Exception as e:
-            status.update(label="取得エラー", state="error")
+            status.update(label="エラー", state="error")
             st.error(f"エラー: {e}")
 
-# 取得済みLP情報の表示
-if st.session_state.pr_lp_metadata:
-    metadata = st.session_state.pr_lp_metadata
-    with st.expander("取得したLP情報", expanded=True):
-        st.markdown(f"**ページタイトル:** {metadata.get('page_title', '')}")
-        if metadata.get('og_title'):
-            st.markdown(f"**OG Title:** {metadata['og_title']}")
-        if metadata.get('og_description'):
-            st.markdown(f"**OG Description:** {metadata['og_description']}")
-        # 取得画像のプレビュー
-        images = st.session_state.pr_lp_reference_images
-        if images:
-            st.markdown(f"**取得した参照画像（{len(images)}枚）**")
-            cols = st.columns(min(len(images), 5))
-            for i, img in enumerate(images):
+if st.session_state.prc_lp_metadata:
+    md = st.session_state.prc_lp_metadata
+    with st.expander("取得したLP情報", expanded=False):
+        st.markdown(f"**ページタイトル:** {md.get('page_title', '')}")
+        st.markdown(f"**OG Title:** {md.get('og_title', '')}")
+        st.markdown(f"**OG Description:** {md.get('og_description', '')}")
+        imgs = st.session_state.prc_lp_tone_images
+        if imgs:
+            st.markdown(f"**LP参照画像 ({len(imgs)}枚)**")
+            cols = st.columns(min(len(imgs), 5))
+            for i, img in enumerate(imgs):
                 with cols[i % 5]:
                     st.image(img, use_container_width=True)
 
 # =============================================================
-# Step 2: 商品/サービス情報（任意）
+# Step 2: デザイン参照画像セット（構造のみ抽出する）
 # =============================================================
-st.subheader("Step 2: 商品/サービス情報")
-st.caption("LP情報から自動推測されますが、強調したいキーワードや訴求軸があればここに")
+st.subheader("Step 2: デザイン参照画像セット（構造の参照）")
+st.caption("過去のヒットPRカルーセル6-7枚をアップロード。色は捨てて構造だけ参考にします。")
+
+uploaded_files = st.file_uploader(
+    "デザイン参照画像（複数選択）",
+    type=["jpg", "jpeg", "png"],
+    accept_multiple_files=True,
+    key="prc_design_uploader",
+    help="過去のヒットPRカルーセル一式（4-7枚）をまとめてアップロード。順番通りに選択するとベスト。",
+)
+
+if uploaded_files:
+    new_images = []
+    for f in uploaded_files:
+        try:
+            img = Image.open(f).convert("RGB")
+            new_images.append(img)
+        except Exception as e:
+            st.warning(f"{f.name} の読み込みに失敗: {e}")
+    if new_images:
+        st.session_state.prc_design_ref_images = new_images
+
+if st.session_state.prc_design_ref_images:
+    imgs = st.session_state.prc_design_ref_images
+    st.success(f"デザイン参照画像: {len(imgs)} 枚アップロード済み")
+    cols = st.columns(min(len(imgs), 6))
+    for i, img in enumerate(imgs):
+        with cols[i % 6]:
+            st.image(img, caption=f"PR-{i+1}", use_container_width=True)
+
+    # 構造抽出
+    if st.button("🔍 デザイン構造をGemini Visionで抽出", use_container_width=False, key="prc_extract_structure"):
+        with st.status("構造抽出中...", expanded=True) as status:
+            try:
+                gemini = GeminiClient(api_key=st.session_state.api_key)
+                struct_prompt = render_pr_carousel_structure_prompt()
+                resp = gemini.analyze_with_images(struct_prompt, imgs)
+                structure = _extract_json_obj(resp)
+                if structure:
+                    st.session_state.prc_design_structure = structure
+                    status.update(label="構造抽出完了", state="complete")
+                else:
+                    status.update(label="JSON解析失敗", state="error")
+                    st.error("Geminiの応答からJSONを抽出できませんでした。")
+            except Exception as e:
+                status.update(label="エラー", state="error")
+                st.error(f"エラー: {e}")
+
+    if st.session_state.prc_design_structure:
+        with st.expander("抽出されたデザイン構造", expanded=False):
+            st.json(st.session_state.prc_design_structure)
+
+# =============================================================
+# Step 3: 商材情報
+# =============================================================
+st.subheader("Step 3: 商材情報")
 
 product_info = st.text_area(
-    "商品名・特徴・訴求軸（任意）",
-    value=st.session_state.pr_product_info,
-    placeholder="例: DHC ファンデーション、無添加、敏感肌向け、初回半額、リピート率90%以上",
-    height=80,
-    key="input_pr_product_info",
+    "商品名・主要訴求軸・価格・キャンペーン・想定される懸念（自由記述）",
+    value=st.session_state.prc_product_info,
+    placeholder="""例:
+商品名: DHC BBクリーム
+主要訴求軸: 化粧下地・ファンデ・日焼け止め一体型 / 秒速美肌 / シミ小ジワをカバー
+価格: 通常 ¥2,200 → 初回 ¥1,100（50%OFF）
+キャンペーン: 期間限定50%OFF + 送料無料
+想定懸念: 厚塗り感 / 肌に合うか不安 / 値段の妥当性
+""",
+    height=160,
+    key="prc_input_product",
 )
-st.session_state.pr_product_info = product_info
+st.session_state.prc_product_info = product_info
 
 # =============================================================
-# Step 3: PR文言案を生成
+# Step 4: 枚数 + 役割編集
 # =============================================================
-st.subheader("Step 3: PR文言案を生成")
+st.subheader("Step 4: 枚数 + 各枚の役割")
 
-btn_propose = st.button(
-    "AIで文言案を生成",
-    type="primary",
-    disabled=not (product_info.strip() or st.session_state.pr_lp_metadata),
-    use_container_width=True,
+# 枚数選択
+page_count = st.slider(
+    "総枚数",
+    min_value=4, max_value=7,
+    value=st.session_state.prc_page_count,
+    key="prc_page_count_slider",
 )
+if page_count != st.session_state.prc_page_count:
+    st.session_state.prc_page_count = page_count
+    # 役割もデフォルトに更新
+    st.session_state.prc_roles = list(PR_DEFAULT_ROLE_SETS.get(page_count, PR_DEFAULT_ROLE_SETS[6]))
 
-if btn_propose:
-    with st.status("PR文言案を生成中...", expanded=True) as status:
+# 役割編集UI
+st.markdown("**各枚の役割（変更可能）**")
+roles = st.session_state.prc_roles[:page_count]
+# 不足分はデフォルトで補完
+while len(roles) < page_count:
+    roles.append("mechanism")
+
+role_options = list(PR_ROLE_DEFINITIONS.keys())
+role_labels = {k: PR_ROLE_DEFINITIONS[k]["label"] for k in role_options}
+
+for i in range(page_count):
+    current = roles[i] if i < len(roles) else "mechanism"
+    if current not in role_options:
+        current = "mechanism"
+    selected = st.selectbox(
+        f"PR-{i+1}",
+        options=role_options,
+        format_func=lambda k: f"{k} - {PR_ROLE_DEFINITIONS[k]['description'][:40]}...",
+        index=role_options.index(current),
+        key=f"prc_role_{i}",
+    )
+    roles[i] = selected
+
+st.session_state.prc_roles = roles
+
+# =============================================================
+# Step 5: AI文言設計
+# =============================================================
+st.subheader("Step 5: 全枚分の文言を一括設計")
+
+design_ok = bool(product_info.strip())
+
+if st.button("🧠 AIで全枚分の文言を設計", type="primary", disabled=not design_ok, use_container_width=True, key="prc_design_content"):
+    with st.status("文言設計中...", expanded=True) as status:
         try:
-            metadata = st.session_state.pr_lp_metadata or {}
             gemini = GeminiClient(api_key=st.session_state.api_key)
-            prompt = render_pr_proposal_prompt(
+            md = st.session_state.prc_lp_metadata or {}
+            content_prompt = render_pr_carousel_content_proposal(
                 product_info=product_info,
-                page_title=metadata.get("page_title", ""),
-                og_title=metadata.get("og_title", ""),
-                og_description=metadata.get("og_description", ""),
+                role_list_for_pages=roles[:page_count],
+                total_pages=page_count,
+                page_title=md.get("page_title", ""),
+                og_title=md.get("og_title", ""),
+                og_description=md.get("og_description", ""),
             )
-            response_text = gemini.analyze_text(prompt)
-            proposals = _parse_pr_proposals(response_text)
-            if proposals:
-                st.session_state.pr_proposals = proposals
-                st.session_state.pr_selected_proposals = [True] * len(proposals)
-                status.update(label=f"{len(proposals)}案を生成", state="complete")
+            resp = gemini.analyze_text(content_prompt)
+            content = _extract_json_obj(resp)
+            if content and "slides" in content:
+                st.session_state.prc_content = content
+                status.update(label="設計完了", state="complete")
             else:
-                status.update(label="案の生成に失敗", state="error")
-                st.error("Geminiの応答を解析できませんでした。商品情報を変えて再試行を。")
+                status.update(label="解析失敗", state="error")
+                st.error("Geminiの応答からスライドJSONを抽出できませんでした。")
         except Exception as e:
             status.update(label="エラー", state="error")
             st.error(f"エラー: {e}")
 
 # =============================================================
-# Step 4: 案の確認・編集
+# Step 6: 文言の確認・編集
 # =============================================================
-if st.session_state.pr_proposals:
-    pr_proposals = st.session_state.pr_proposals
-    pr_selected = st.session_state.pr_selected_proposals
+if st.session_state.prc_content:
+    content = st.session_state.prc_content
+    st.subheader("Step 6: 文言確認・編集")
 
-    st.subheader("Step 4: 文言案を確認・編集")
-
-    for i, prop in enumerate(pr_proposals):
-        pr_selected[i] = st.checkbox(
-            f"PR案{i+1}: {prop.get('headline', '未設定')}",
-            value=pr_selected[i],
-            key=f"pr_sel_{i}",
+    # 全体コンセプト + 共通CTA
+    with st.expander("カルーセル全体のコンセプト + 共通CTA", expanded=True):
+        content["set_concept"] = st.text_area(
+            "全体コンセプト",
+            value=content.get("set_concept", ""),
+            height=60,
+            key="prc_set_concept",
         )
-        with st.expander(f"PR案{i+1}を編集", expanded=(len(pr_proposals) == 1)):
-            prop["headline"] = st.text_input(
-                "ヘッドライン（最大18文字）",
-                value=prop.get("headline", ""),
-                key=f"pr_headline_{i}",
+        cta = content.get("common_cta", {})
+        c1, c2 = st.columns(2)
+        with c1:
+            cta["main_text"] = st.text_input(
+                "CTAボタン文言（全枚共通）",
+                value=cta.get("main_text", ""),
+                key="prc_cta_main",
             )
-            prop["subcopy"] = st.text_input(
-                "サブコピー（最大20文字）",
-                value=prop.get("subcopy", ""),
-                key=f"pr_subcopy_{i}",
+        with c2:
+            cta["sub_copy"] = st.text_input(
+                "CTA上の補助コピー",
+                value=cta.get("sub_copy", ""),
+                key="prc_cta_sub",
             )
-            prop["cta_text"] = st.text_input(
-                "CTAボタン（最大10文字）",
-                value=prop.get("cta_text", ""),
-                key=f"pr_cta_{i}",
+        content["common_cta"] = cta
+
+    # 各スライド編集
+    slides = content.get("slides", [])
+    for i, slide in enumerate(slides):
+        role = slide.get("role", "")
+        role_label = PR_ROLE_DEFINITIONS.get(role, {}).get("label", role)
+        with st.expander(f"【PR-{i+1}】 {role_label}", expanded=False):
+            slide["headline"] = st.text_input(
+                "ヘッドライン",
+                value=slide.get("headline", ""),
+                key=f"prc_slide_headline_{i}",
             )
-            prop["visual_description"] = st.text_area(
-                "主題ビジュアル説明",
-                value=prop.get("visual_description", ""),
+            slide["sub_headline"] = st.text_input(
+                "サブ見出し（任意）",
+                value=slide.get("sub_headline", ""),
+                key=f"prc_slide_sub_{i}",
+            )
+            elements_text = "\n".join(slide.get("key_elements", []))
+            edited_elements = st.text_area(
+                "主要要素（1行1項目）",
+                value=elements_text,
                 height=80,
-                key=f"pr_visual_{i}",
+                key=f"prc_slide_elements_{i}",
+            )
+            slide["key_elements"] = [l.strip() for l in edited_elements.split("\n") if l.strip()]
+            slide["visual_description"] = st.text_area(
+                "中央のメインビジュアル",
+                value=slide.get("visual_description", ""),
+                height=60,
+                key=f"prc_slide_visual_{i}",
             )
 
-    st.session_state.pr_selected_proposals = pr_selected
+    content["slides"] = slides
+    st.session_state.prc_content = content
 
     # =============================================================
-    # Step 5: 生成設定 + 生成ボタン
+    # Step 7: 生成設定
     # =============================================================
-    st.subheader("Step 5: 生成設定")
+    st.subheader("Step 7: 生成設定")
 
     size_preset = st.radio(
-        "サイズ",
+        "サイズ（全枚共通）",
         options=["縦長 (682×1024)", "スクエア (1080×1080)", "横長 (1200×630)", "カスタム"],
         horizontal=True,
         index=0,
-        key="pr_size_preset",
+        key="prc_size_preset",
     )
     if size_preset.startswith("縦長"):
-        pr_width, pr_height = 682, 1024
+        pr_w, pr_h = 682, 1024
     elif size_preset.startswith("スクエア"):
-        pr_width, pr_height = 1080, 1080
+        pr_w, pr_h = 1080, 1080
     elif size_preset.startswith("横長"):
-        pr_width, pr_height = 1200, 630
+        pr_w, pr_h = 1200, 630
     else:
         cs1, cs2 = st.columns(2)
         with cs1:
-            pr_width = st.number_input("幅(px)", min_value=256, max_value=4096, value=682, step=10, key="pr_width")
+            pr_w = st.number_input("幅(px)", min_value=256, max_value=4096, value=682, step=10, key="prc_w")
         with cs2:
-            pr_height = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1024, step=10, key="pr_height")
+            pr_h = st.number_input("高さ(px)", min_value=256, max_value=4096, value=1024, step=10, key="prc_h")
 
-    target_ratio = pr_width / pr_height
+    target_ratio = pr_w / pr_h
     best_ar = "1:1"
     min_diff = float("inf")
     for ar in SUPPORTED_ASPECT_RATIOS:
@@ -272,37 +387,49 @@ if st.session_state.pr_proposals:
         if diff < min_diff:
             min_diff = diff
             best_ar = ar
-    st.caption(f"出力サイズ: **{pr_width}×{pr_height}px** / アスペクト比(自動): **{best_ar}**")
+    st.caption(f"出力サイズ: **{pr_w}×{pr_h}px** / アスペクト比(自動): **{best_ar}**")
 
-    selected_count = sum(1 for s in pr_selected if s)
     st.divider()
 
-    if st.session_state.pr_generation_in_progress:
-        st.session_state.pr_generation_in_progress = False
+    # =============================================================
+    # Step 8: 一括生成
+    # =============================================================
+    st.subheader(f"Step 8: 全{len(slides)}枚を一括生成")
 
-    batch_btn = st.button(
-        f"選択した{selected_count}案を一括生成",
-        type="primary",
-        disabled=(selected_count == 0),
-        use_container_width=True,
-    )
+    structure = st.session_state.prc_design_structure or {}
+    tone_imgs = st.session_state.prc_lp_tone_images or []
 
-    if batch_btn:
-        st.session_state.pr_generation_in_progress = True
-        st.session_state.pr_generated_images = []
-        selected_idx_list = [i for i, s in enumerate(pr_selected) if s]
-        progress_bar = st.progress(0, text="PR画像を生成中...")
+    info_lines = []
+    info_lines.append(f"- 文言設計: 全{len(slides)}枚分準備済み")
+    info_lines.append(f"- LP参照画像（色味）: {len(tone_imgs)}枚")
+    info_lines.append(f"- デザイン構造: {'抽出済み' if structure else '未抽出（参照画像のスタイルだけ使用）'}")
+    st.info("\n".join(info_lines))
 
-        # 参照画像セット: LP取得画像 + サイト参照画像(あれば)を結合
-        ref_images = list(st.session_state.pr_lp_reference_images or [])
-        if st.session_state.current_site:
-            cm = get_cm()
-            # PR専用カテゴリがあれば追加
-            site_pr = cm.get_reference_pil_images(st.session_state.current_site, category="pr")
-            if site_pr:
-                ref_images.extend(site_pr)
+    if st.session_state.prc_in_progress:
+        st.session_state.prc_in_progress = False
 
-        # サイトカラー(設定があれば)
+    can_generate = bool(tone_imgs) and bool(slides) and bool(content.get("common_cta", {}).get("main_text"))
+    if not can_generate:
+        st.warning("URLからのLP参照画像取得と、文言設計を完了させてください。")
+
+    if st.button(f"🚀 全{len(slides)}枚を一括生成", type="primary", disabled=not can_generate, use_container_width=True, key="prc_batch_generate"):
+        st.session_state.prc_in_progress = True
+        st.session_state.prc_generated_images = []
+
+        # 共通骨格記述（構造から抽出）
+        common_skeleton_text = ""
+        if structure and "common_skeleton" in structure:
+            cs = structure["common_skeleton"]
+            common_skeleton_text = (
+                f"- 左上: {cs.get('top_left_position', '')}\n"
+                f"- 右上: {cs.get('top_right_position', '')}\n"
+                f"- 最下部CTA: {cs.get('bottom_cta', '')}\n"
+                f"- 配色運用: {cs.get('color_palette_role', '')}"
+            )
+
+        # 各スライドのレイアウト指示（構造から取得 or デフォルト）
+        structure_pages = structure.get("pages", []) if structure else []
+
         site_colors = None
         if config:
             site_colors = {
@@ -318,88 +445,130 @@ if st.session_state.pr_proposals:
             openai_api_key=st.session_state.openai_api_key,
         )
 
-        for step, idx in enumerate(selected_idx_list):
-            prop = pr_proposals[idx]
-            progress = (step + 1) / len(selected_idx_list)
-            progress_bar.progress(progress, text=f"案{idx+1}を生成中... ({step+1}/{len(selected_idx_list)})")
+        progress_bar = st.progress(0, text="PRカルーセルを生成中...")
+        common_cta = content.get("common_cta", {})
+
+        design_ref_images = st.session_state.prc_design_ref_images or []
+
+        for i, slide in enumerate(slides):
+            page_no = i + 1
+            progress = page_no / len(slides)
+            progress_bar.progress(progress, text=f"PR-{page_no}/{len(slides)} を生成中...")
+
+            # この枚に対応するデザイン参照画像（あれば該当枚、なければ最初の1枚）
+            design_ref_for_slide = None
+            if design_ref_images:
+                if i < len(design_ref_images):
+                    design_ref_for_slide = design_ref_images[i]
+                else:
+                    design_ref_for_slide = design_ref_images[0]
+
+            # 参照画像セット = デザイン参照1枚（先頭）+ LP参照群
+            ref_images_for_gpt = []
+            if design_ref_for_slide is not None:
+                ref_images_for_gpt.append(design_ref_for_slide)
+            ref_images_for_gpt.extend(tone_imgs)
+
+            gen_prompt = render_pr_carousel_slide_generation(
+                page_no=page_no,
+                total_pages=len(slides),
+                slide_role=slide.get("role", "introduction"),
+                slide_data=slide,
+                common_skeleton_desc=common_skeleton_text,
+                layout_structure_desc="",  # 旧パラメータ（未使用）
+                common_cta=common_cta,
+                site_colors=site_colors,
+                language=config.get("language", "Japanese") if config else "Japanese",
+                image_width=pr_w,
+                image_height=pr_h,
+                tone_count=len(tone_imgs),
+            )
+
             try:
-                gen_prompt = render_pr_generation_prompt(
-                    pr_proposal=prop,
-                    site_colors=site_colors,
-                    language=config.get("language", "Japanese") if config else "Japanese",
-                    has_reference_images=bool(ref_images),
-                    image_width=pr_width,
-                    image_height=pr_height,
-                )
                 gen_image, gen_text = image_client.generate_image(
                     prompt=gen_prompt,
-                    reference_images=ref_images if ref_images else None,
+                    reference_images=ref_images_for_gpt,  # デザイン参照1枚 + LP参照群
                     aspect_ratio=best_ar,
                     image_size="2K",
                 )
                 if gen_image:
-                    label = prop.get("headline", f"pr_{idx}")
                     site_for_storage = st.session_state.current_site or "no-site"
+                    label = f"{page_no:02d}_{slide.get('role', '')}"
                     saved_key = _save_to_storage(gen_image, site_for_storage, label)
-                    st.session_state.pr_generated_images.append({
-                        "proposal_idx": idx,
-                        "proposal": prop,
+                    st.session_state.prc_generated_images.append({
+                        "page_no": page_no,
+                        "role": slide.get("role", ""),
+                        "slide_data": slide,
                         "image": gen_image,
                         "processed_image": None,
                         "response_text": gen_text,
                         "generation_prompt": gen_prompt,
-                        "reference_image_count": len(ref_images) if ref_images else 0,
+                        "reference_image_count": len(tone_imgs),
                         "saved_key": saved_key,
                         "timestamp": datetime.datetime.now().isoformat(),
                     })
                 else:
-                    st.warning(f"案{idx+1} の生成失敗: {gen_text or ''}")
+                    st.warning(f"PR-{page_no} の生成失敗: {gen_text or ''}")
             except Exception as e:
-                st.error(f"案{idx+1} のエラー: {e}")
+                st.error(f"PR-{page_no} のエラー: {e}")
 
-        progress_bar.progress(1.0, text="生成完了!")
-        st.session_state.pr_generation_in_progress = False
+        progress_bar.progress(1.0, text="全枚生成完了!")
+        st.session_state.prc_in_progress = False
         st.rerun()
 
 # =============================================================
 # 生成結果
 # =============================================================
-if st.session_state.pr_generated_images:
-    st.subheader("生成結果")
-    images = st.session_state.pr_generated_images
+if st.session_state.prc_generated_images:
+    st.subheader("カルーセル生成結果")
+    images = st.session_state.prc_generated_images
+
     for i, entry in enumerate(images):
-        prop = entry["proposal"]
-        img = entry["image"]
-        processed = entry.get("processed_image")
-        st.markdown(f"### PR案{entry['proposal_idx']+1}: {prop.get('headline', '')}")
+        role = entry["role"]
+        role_label = PR_ROLE_DEFINITIONS.get(role, {}).get("label", role)
+        st.markdown(f"### PR-{entry['page_no']}/{len(images)} - {role_label}")
+
         d_col, c_col = st.columns([2, 1])
         with d_col:
-            display_img = processed if processed else img
+            display_img = entry.get("processed_image") or entry["image"]
             st.image(display_img, use_container_width=True)
-            prompt_used = entry.get("generation_prompt", "")
-            ref_count = entry.get("reference_image_count", 0)
             with st.expander("📝 このプロンプトを見る", expanded=False):
+                prompt_used = entry.get("generation_prompt", "")
+                ref_count = entry.get("reference_image_count", 0)
                 if prompt_used:
                     if ref_count > 0:
-                        st.caption(
-                            f"⚠️ 参照画像を{ref_count}枚併用（LP取得画像含む）。"
-                            "テキストプロンプトだけでは100%再現できません。"
-                        )
+                        st.caption(f"⚠️ LP参照画像 {ref_count}枚併用")
                     st.code(prompt_used, language="text")
-                else:
-                    st.caption("（プロンプト未記録）")
         with c_col:
-            if st.button("余白トリミング", key=f"pr_trim_{i}"):
-                entry["processed_image"] = trim_whitespace(img)
+            if st.button("余白トリミング", key=f"prc_trim_{i}"):
+                entry["processed_image"] = trim_whitespace(entry["image"])
                 st.rerun()
-            download_img = processed if processed else img
+            download_img = entry.get("processed_image") or entry["image"]
             img_bytes = image_to_bytes(download_img)
             st.download_button(
-                "PNGダウンロード",
+                "このPNG DL",
                 data=img_bytes,
-                file_name=f"pr_{entry['proposal_idx']+1}_{i}.png",
+                file_name=f"pr_{entry['page_no']:02d}_{entry['role']}.png",
                 mime="image/png",
-                key=f"pr_dl_{i}",
+                key=f"prc_dl_{i}",
                 use_container_width=True,
             )
         st.divider()
+
+    # 一括ZIPダウンロード
+    if st.button(f"📦 全{len(images)}枚をZIPでダウンロード", use_container_width=True, key="prc_dl_zip"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for entry in images:
+                dl_img = entry.get("processed_image") or entry["image"]
+                img_bytes = image_to_bytes(dl_img)
+                filename = f"{entry['page_no']:02d}_{entry['role']}.png"
+                zf.writestr(filename, img_bytes)
+        st.download_button(
+            "ZIPをダウンロード",
+            data=buf.getvalue(),
+            file_name=f"pr_carousel_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+            mime="application/zip",
+            key="prc_zip_file",
+            use_container_width=True,
+        )

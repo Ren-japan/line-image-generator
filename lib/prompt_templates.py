@@ -1379,3 +1379,376 @@ def render_pr_generation_prompt(
         image_width=image_width,
         image_height=image_height,
     )
+
+
+# =============================================================
+# LINE版: PR画像 デュアル参照テンプレート
+# デザイン参照画像（構造・レイアウト）+ LP参照画像（色・雰囲気）の役割分担
+# =============================================================
+
+PR_GENERATION_WITH_DUAL_REF_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+
+添付の参照画像は **役割の違う2種類** が並んでいます。順番が重要：
+
+【参照画像の役割分担（厳守）】
+- 最初の {design_count} 枚 = **デザイン参照画像**（過去のヒットPR）
+  → このバナーの構造・レイアウト・要素配置・テキストの並び・ボタンの形状・装飾パターンを完全にコピーする
+  → 「どこに何があるか」「どんな構成か」は全部この画像群の通りに作る
+
+- {tone_start} 枚目以降 = **LP雰囲気参照画像**（遷移先LPの実画像）
+  → このバナーから **色味（配色パレット）・フォント感・写真トーン・全体の雰囲気** だけを抽出
+  → デザイン参照の構造に、この色味・雰囲気を適用する
+  → 商品ジャンルの世界観（化粧品・医療・etc）が伝わる質感を借りる
+
+【最終結果のイメージ】
+「過去のヒットPRと同じ構造（=ユーザーが反応するレイアウト）」を、
+「遷移先LPと同じ色・雰囲気（=LP遷移後の視覚的連続性）」で塗り直したバナー。
+
+【絶対やらないこと】
+- デザイン参照画像の色をそのまま使う（色はLP参照優先）
+- LP参照画像のレイアウト構造を真似る（構造はデザイン参照優先）
+- デザイン参照やLP参照の元の文字・ロゴ・人物を勝手に残す（テキストは下記指定のみ）
+
+{color_instruction}
+
+== 差し替えるテキスト内容 ==
+- ヘッドライン（最も大きい）: 「{headline}」
+- サブコピー: 「{subcopy}」
+- CTAボタン（必ず1つだけ）: 「{cta_text}」
+- 主題ビジュアル（中央 or 背景）: {visual_description}
+
+== 厳守ルール ==
+- 上記「」内の文字列を一字一句そのまま描画
+- 構造 = デザイン参照を完全コピー / 色味 = LP参照から借用
+- テキストは{language}のみ
+- CTAボタンは1つだけ。デザイン参照に複数あっても1つに統合
+"""
+
+
+def render_pr_generation_prompt_dual(
+    pr_proposal: dict,
+    design_count: int,
+    tone_count: int,
+    site_colors: dict | None = None,
+    language: str = "Japanese",
+    image_width: int = 682,
+    image_height: int = 1024,
+) -> str:
+    """デザイン参照 + LP参照 のデュアル参照向け生成プロンプト"""
+    color_instruction = _build_line_color_instruction(site_colors, minimal=True)
+    return PR_GENERATION_WITH_DUAL_REF_TEMPLATE.format(
+        color_instruction=color_instruction,
+        headline=pr_proposal.get("headline", "").strip(),
+        subcopy=pr_proposal.get("subcopy", "").strip(),
+        cta_text=pr_proposal.get("cta_text", "").strip(),
+        visual_description=pr_proposal.get("visual_description", "").strip(),
+        language=language,
+        image_width=image_width,
+        image_height=image_height,
+        design_count=design_count,
+        tone_start=design_count + 1,
+    )
+
+
+# =============================================================
+# LINE版 PRカルーセル（6-7枚セット）テンプレート群
+# 1枚生成じゃなく「複数枚で1ストーリー」のPRカルーセル設計
+# knowledge/pr-design-patterns.md の暗黙知を内蔵
+# =============================================================
+
+# PR-1〜N の役割定義（knowledge/pr-design-patterns.md ベース）
+PR_ROLE_DEFINITIONS = {
+    "introduction": {
+        "label": "PR-1: 商材紹介（Attention）",
+        "description": "商品/サービス名 + キャッチビジュアル + 権威性バッジ + おすすめポイント3項目",
+        "content_keys": ["intro_header", "brand_name", "authority_badges", "key_points"],
+    },
+    "price": {
+        "label": "価格訴求（Interest）",
+        "description": "通常価格→値引き→特別価格、限定条件、送料・診察料の優位性",
+        "content_keys": ["price_headline", "normal_price", "special_price", "discount_rate", "limited_terms"],
+    },
+    "mechanism": {
+        "label": "効果メカニズム / 症状解説（Desire）",
+        "description": "物販なら成分・実証データ。サービスなら症状分類+放置リスク+解決ベネフィット",
+        "content_keys": ["mechanism_headline", "scientific_proof", "before_after", "benefit_chain"],
+    },
+    "social_proof": {
+        "label": "社会的証明（Trust）",
+        "description": "累計実績数 + 満足度% + 顧客口コミ2-3件（星5評価）",
+        "content_keys": ["track_record", "satisfaction_rate", "testimonials"],
+    },
+    "comparison": {
+        "label": "競合比較",
+        "description": "他社との比較表で自社の優位性を直接示す",
+        "content_keys": ["comparison_table", "self_advantages"],
+    },
+    "campaign": {
+        "label": "キャンペーン詳細（Action）",
+        "description": "期間限定 + 適用条件 + 緊急性煽り + 価格再掲",
+        "content_keys": ["urgency", "conditions", "discount_recap"],
+    },
+    "risk_reversal": {
+        "label": "懸念払拭（Risk Reversal）",
+        "description": "金銭・痛み・羞恥心・効果への不安を1枚で解消（返金保証、分割払い、匿名配送、相談OK等）",
+        "content_keys": ["concern", "solution", "guarantee"],
+    },
+}
+
+# デフォルト枚数別の役割割当（6枚パターン）
+PR_DEFAULT_ROLE_SETS = {
+    6: ["introduction", "price", "mechanism", "social_proof", "campaign", "risk_reversal"],
+    7: ["introduction", "price", "mechanism", "mechanism", "social_proof", "campaign", "risk_reversal"],
+    5: ["introduction", "price", "mechanism", "social_proof", "campaign"],
+    4: ["introduction", "price", "social_proof", "campaign"],
+}
+
+
+# ============================================
+# Phase 1: デザイン参照画像セット → 構造抽出
+# ============================================
+PR_CAROUSEL_STRUCTURE_EXTRACTION_PROMPT = """添付の画像は、過去にコンバージョン率の高かったLINE誘導PRカルーセル（N枚で1セット）です。
+
+これらの **デザイン構造・レイアウト・装飾パターン** を分析してください。
+
+【重要前提】
+- 添付画像はN枚で1ストーリーのカルーセル
+- 各枚に役割がある（1枚目=商材紹介、2枚目=価格、3枚目=効果メカニズム/症状解説、4枚目=社会的証明、5枚目=キャンペーン詳細、6枚目=懸念払拭 などの順序が典型）
+- 役割は順序入れ替わることもある（物販系とサービス系で違う）
+
+【記述ルール】
+- 元の文字内容（商品名・価格・コピー・社名）は一切含めない
+- 構造（どこに何があるか）と装飾（リボン・カード・色感・形状）だけを抽出
+- 全枚共通の「骨格」（左上ロゴ位置・右上[PR]ラベル・最下部CTAボタン形状）を抽出
+- 各枚固有の構造（特徴リスト形・比較表形・口コミカード形・価格表形・症状分類形 等）も抽出
+
+【出力形式（JSON必須）】
+```json
+{
+  "set_summary": "カルーセル全体の構造サマリー（50〜120字）",
+  "total_pages": N,
+  "common_skeleton": {
+    "top_left_position": "ブランドロゴの配置と装飾",
+    "top_right_position": "【PR】ラベル等の配置",
+    "bottom_cta": "CTAボタンの形状・色・装飾（角丸/矢印/補助コピー等）",
+    "color_palette_role": "メインカラー/アクセントカラー/ベース色の使い分けパターン"
+  },
+  "pages": [
+    {
+      "page_no": 1,
+      "estimated_role": "introduction / price / mechanism / social_proof / comparison / campaign / risk_reversal",
+      "layout_type": "ヒーロー型 / ポイント列挙型 / 比較表型 / 口コミカード型 / 価格表型 / 症状分類型 / ベネフィット連鎖型 など",
+      "key_visual": "中央に来るビジュアル要素（商品/人物/数字/比較表/イラスト 等）",
+      "text_blocks": [
+        {"position": "上部 / 中央 / 下部", "type": "見出し / 帯ナビ / 強調数字 / リスト項目 / 説明文", "size_relative": "大/中/小", "decoration": "装飾"}
+      ],
+      "decorative_elements": ["リボン", "星マーク", "チェックマーク", "吹き出し", "比較矢印", "etc"]
+    }
+  ]
+}
+```
+
+文字内容は絶対に含めず、「構造」と「装飾パターン」のみを抽出してください。
+"""
+
+
+# ============================================
+# Phase 2: 商材情報 → 全N枚分の役割別文言設計
+# ============================================
+PR_CAROUSEL_CONTENT_PROPOSAL_TEMPLATE = """あなたはLINEマーケのPRカルーセル設計者です。
+商材情報と各枚の役割をもとに、{total_pages}枚分の文言設計を一括で提案してください。
+
+== 商材情報 ==
+{product_info}
+
+== LP情報（自動取得） ==
+- ページタイトル: {page_title}
+- OG Title: {og_title}
+- OG Description: {og_description}
+
+== 各枚の役割（順序固定）==
+{role_list}
+
+== 出力形式（JSON必須）==
+```json
+{{
+  "set_concept": "カルーセル全体のコンセプト（30〜80字）",
+  "common_cta": {{
+    "main_text": "全枚共通のCTAボタン文言（最大10文字。行動敷居を低く: 例「ご相談だけでもOK」「お得に試してみる」「無料で見てみる」）",
+    "sub_copy": "ボタン上の補助コピー（最大20文字）"
+  }},
+  "slides": [
+    {{
+      "page_no": 1,
+      "role": "introduction",
+      "headline": "メイン見出し（最大25文字）",
+      "sub_headline": "サブ見出し（任意・最大20文字）",
+      "key_elements": [
+        "要素1（例: 商品名・権威性・特徴）",
+        "要素2",
+        "要素3"
+      ],
+      "visual_description": "中央に描くビジュアル（商品/人物/数字/比較等を具体的に）"
+    }}
+  ]
+}}
+```
+
+== 役割別のコンテンツ指針（厳守）==
+
+- **introduction**: 「あなたにおすすめな〇〇は」型のヘッダ + ブランド名 + おすすめポイント3項目（チェックリスト形式）
+- **price**: 通常価格→値引き→特別価格、送料・診察料の優位性、限定枠（「毎月N名様」「期間限定」）
+- **mechanism**: 物販=成分名・由来・実証データ・ベネフィット連鎖 / サービス系=症状分類（〇〇型/△△型）+ 放置リスク + 解決ベネフィット
+- **social_proof**: 累計利用者数（具体的数字）+ 満足度% + 顧客口コミ2-3件（星5評価、年齢・性別付き）
+- **comparison**: 3社比較表（自社+他社2-3）or 「一般〇〇 vs 自社」の優位性比較
+- **campaign**: 「今だけ」「期間限定」緊急性 + 適用条件3つ + 価格再掲（PR-2より具体的に）
+- **risk_reversal**: 想定される不安（「まとまったお金がない」「効果なかったら」「他人に知られたくない」等）→ 解決策（分割払い・返金保証・匿名配送・相談OK等）
+
+== 全体ルール ==
+- 各枚で役割を重複させない（価格訴求とキャンペーン詳細は混同しない）
+- 共通CTAは「行動敷居を低く」: "購入"・"決定" は禁止、"見てみる"・"相談する"・"試す" を使う
+- 数字には必ず単位をつける（「100万件」「90%」「4,000回」）
+- 強調すべき部分は「色変え想定」のキーワードとして key_elements に明記
+"""
+
+
+# ============================================
+# Phase 3: 各枚の生成プロンプト（構造+LP色味+役割記述）
+# ============================================
+PR_CAROUSEL_SLIDE_GENERATION_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+全{total_pages}枚のPRカルーセルのうち {page_no} 枚目を作成します。
+
+【添付の参照画像の役割（厳守。順番が極めて重要）】
+- **最初の1枚 = デザイン参照画像**（過去のヒットPRカルーセルの{page_no}枚目）
+  → このレイアウト・構造・装飾・要素配置・テキストブロックの位置を **完全コピー**
+  → 「どこに、何が、どんなサイズ・装飾で配置されているか」は全てこの1枚目の通りに作る
+  → ただし: **元の文字内容（商品名・コピー・社名・実績数字）は無視**
+  → ただし: **元の人物・商品・ロゴは無視**（位置はそのまま使い、中身を下記指定に差し替える）
+
+- **残りの {tone_count} 枚 = LP参照画像**（遷移先LPの実画像）
+  → **色味（配色パレット）・フォント感・写真トーン・全体の雰囲気** のみ抽出
+  → これらの画像のレイアウトには一切影響されない（レイアウトは1枚目を厳守）
+
+【最終結果のイメージ】
+「1枚目（デザイン参照）のレイアウトと装飾」に「LP参照の色味」を塗って、
+テキスト内容と中央のビジュアルを下記指定に差し替えた1枚を作る。
+
+【絶対やらないこと】
+- 1枚目の元の文字をそのまま残す
+- 1枚目の元の人物・商品・ロゴをそのまま残す
+- 残り{tone_count}枚（LP参照）のレイアウトに引っ張られる
+- 上記指定文字以外のテキストを描画する
+- CTAボタンを複数描画する
+- 関係ない人物・商品を追加する
+
+== このセット全体の共通骨格（全{total_pages}枚で統一）==
+{common_skeleton}
+
+{color_instruction}
+
+== このスライド（{page_no}/{total_pages}枚目）の役割 ==
+**役割**: {slide_role_label}
+**目的**: {slide_role_description}
+
+== 描画するテキスト内容（厳守。これ以外の文字は一切描画しない）==
+- ヘッドライン（最も大きい）: 「{headline}」
+{sub_headline_line}
+== 主要要素（このスライドで強調する内容）==
+{key_elements_text}
+
+== 中央のメインビジュアル（1枚目の人物・商品の位置に差し替えて配置）==
+{visual_description}
+
+== CTAボタン（1枚目のCTA位置に、形状もコピーして配置）==
+- メインテキスト: 「{cta_main}」
+- 補助コピー: 「{cta_sub}」
+
+== 厳守ルール ==
+- テキストは{language}のみ
+- 「{page_no}/{total_pages}」のページナンバリングは描画しない
+"""
+
+
+def render_pr_carousel_structure_prompt() -> str:
+    """デザイン参照画像群から構造抽出するプロンプト"""
+    return PR_CAROUSEL_STRUCTURE_EXTRACTION_PROMPT
+
+
+def render_pr_carousel_content_proposal(
+    product_info: str,
+    role_list_for_pages: list[str],
+    total_pages: int,
+    page_title: str = "",
+    og_title: str = "",
+    og_description: str = "",
+) -> str:
+    """商材情報 + 各枚の役割 → 全枚文言設計プロンプト"""
+    role_lines = []
+    for i, role_key in enumerate(role_list_for_pages, 1):
+        role_def = PR_ROLE_DEFINITIONS.get(role_key, {"label": role_key, "description": ""})
+        role_lines.append(f"  PR-{i}: {role_def['label']} - {role_def['description']}")
+    role_list = "\n".join(role_lines)
+
+    return PR_CAROUSEL_CONTENT_PROPOSAL_TEMPLATE.format(
+        product_info=product_info or "（特定なし。LP情報から推測）",
+        page_title=page_title or "（未取得）",
+        og_title=og_title or "（なし）",
+        og_description=og_description or "（なし）",
+        total_pages=total_pages,
+        role_list=role_list,
+    )
+
+
+def render_pr_carousel_slide_generation(
+    page_no: int,
+    total_pages: int,
+    slide_role: str,
+    slide_data: dict,
+    common_skeleton_desc: str,
+    layout_structure_desc: str,
+    common_cta: dict,
+    site_colors: dict | None = None,
+    language: str = "Japanese",
+    image_width: int = 682,
+    image_height: int = 1024,
+    tone_count: int = 0,
+) -> str:
+    """1枚分のスライド生成プロンプトを組み立てる
+
+    Args:
+        tone_count: LP参照画像の枚数（プロンプト内で「残り{tone_count}枚」と表記）
+        - layout_structure_desc は使われなくなった（旧版互換のためパラメータは残置）
+    """
+    role_def = PR_ROLE_DEFINITIONS.get(slide_role, {})
+    role_label = role_def.get("label", slide_role)
+    role_desc = role_def.get("description", "")
+
+    color_instruction = _build_line_color_instruction(site_colors, minimal=True)
+
+    sub_headline = slide_data.get("sub_headline", "").strip()
+    sub_headline_line = f"- サブ見出し: 「{sub_headline}」" if sub_headline else ""
+
+    key_elements = slide_data.get("key_elements", [])
+    if key_elements:
+        key_elements_text = "\n".join(f"  - {e}" for e in key_elements)
+    else:
+        key_elements_text = "  （特になし。ヘッドラインのみ）"
+
+    return PR_CAROUSEL_SLIDE_GENERATION_TEMPLATE.format(
+        page_no=page_no,
+        total_pages=total_pages,
+        tone_count=tone_count,
+        common_skeleton=common_skeleton_desc or "（参照画像のトンマナに従う）",
+        color_instruction=color_instruction,
+        slide_role_label=role_label,
+        slide_role_description=role_desc,
+        headline=slide_data.get("headline", "").strip(),
+        sub_headline_line=sub_headline_line,
+        key_elements_text=key_elements_text,
+        visual_description=slide_data.get("visual_description", "").strip(),
+        cta_main=common_cta.get("main_text", "").strip(),
+        cta_sub=common_cta.get("sub_copy", "").strip(),
+        language=language,
+        image_width=image_width,
+        image_height=image_height,
+    )
