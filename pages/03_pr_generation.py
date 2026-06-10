@@ -11,6 +11,7 @@ PR=複数枚で1ストーリーが前提（1枚生成じゃない）。
 4. 各枚を順次生成（共通骨格・CTA・色味で統一、各枚=役割別コンテンツ）
 """
 
+from __future__ import annotations
 import io
 import json
 import re
