@@ -26,11 +26,13 @@ from lib.prompt_templates import (
     render_pr_carousel_structure_prompt,
     render_pr_carousel_content_proposal,
     render_pr_carousel_slide_generation,
+    render_product_info_extraction_prompt,
+    format_product_info_for_proposal,
     PR_DEFAULT_ROLE_SETS,
     PR_ROLE_DEFINITIONS,
 )
 from lib.image_postprocessor import trim_whitespace, image_to_bytes
-from lib.url_scraper import fetch_lp_reference_images
+from lib.url_scraper import fetch_lp_reference_images, fetch_lp_text_content
 
 
 def get_cm():
@@ -65,6 +67,8 @@ for key, default in {
     "prc_target_url": "",
     "prc_lp_metadata": {},
     "prc_lp_tone_images": [],
+    "prc_lp_body_text": "",
+    "prc_lp_product_info": None,  # 自動抽出された商材情報JSON
     "prc_design_ref_images": [],
     "prc_design_structure": None,
     "prc_product_info": "",
@@ -115,13 +119,47 @@ target_url = st.text_input(
 )
 st.session_state.prc_target_url = target_url
 
-if st.button("URLから情報取得", disabled=not target_url.strip(), use_container_width=False, key="prc_fetch_lp"):
+if st.button("URLから情報取得（画像＋商材情報を自動抽出）", disabled=not target_url.strip(), use_container_width=False, key="prc_fetch_lp", type="primary"):
     with st.status("LPから情報取得中...", expanded=True) as status:
         try:
+            st.write("Step 1/3: LP画像とog:*メタを取得...")
             images, metadata = fetch_lp_reference_images(target_url, max_count=5)
             st.session_state.prc_lp_tone_images = images
             st.session_state.prc_lp_metadata = metadata
-            status.update(label=f"取得完了: 画像{len(images)}枚 / メタ情報OK", state="complete")
+            st.write(f"  画像 {len(images)} 枚 / og_title: {(metadata.get('og_title') or '')[:40]}...")
+
+            st.write("Step 2/3: LP本文テキストを取得...")
+            try:
+                body_text = fetch_lp_text_content(target_url, max_chars=6000)
+            except Exception:
+                body_text = ""
+            st.session_state.prc_lp_body_text = body_text
+            st.write(f"  本文 {len(body_text)} 文字（JSレンダ系LPだと0でも続行）")
+
+            st.write("Step 3/3: 商材情報をGeminiで構造化抽出...")
+            try:
+                gemini = GeminiClient(api_key=st.session_state.api_key)
+                extract_prompt = render_product_info_extraction_prompt(
+                    page_title=metadata.get("page_title", ""),
+                    og_title=metadata.get("og_title", ""),
+                    og_description=metadata.get("og_description", ""),
+                    body_text=body_text,
+                )
+                resp = gemini.analyze_text(extract_prompt)
+                product_info = _extract_json_obj(resp)
+                if product_info:
+                    st.session_state.prc_lp_product_info = product_info
+                    # 商材情報フォームに自動入力（既存値があれば上書きしない、空のときだけ補完）
+                    formatted = format_product_info_for_proposal(product_info)
+                    if not st.session_state.prc_product_info.strip():
+                        st.session_state.prc_product_info = formatted
+                    st.write(f"  商材情報抽出OK: 商品名={product_info.get('product_name', '?')}")
+                else:
+                    st.warning("商材情報のJSON解析失敗。og情報のみで続行します。")
+            except Exception as ex_inner:
+                st.warning(f"商材情報抽出スキップ: {ex_inner}")
+
+            status.update(label="LP情報・商材情報取得完了", state="complete")
         except Exception as e:
             status.update(label="エラー", state="error")
             st.error(f"エラー: {e}")
@@ -141,76 +179,120 @@ if st.session_state.prc_lp_metadata:
                     st.image(img, use_container_width=True)
 
 # =============================================================
-# Step 2: デザイン参照画像セット（構造のみ抽出する）
+# Step 2: デザイン参照画像セット（ジャンル単位で管理）
 # =============================================================
-st.subheader("Step 2: デザイン参照画像セット（構造の参照）")
-st.caption("過去のヒットPRカルーセル6-7枚をアップロード。色は捨てて構造だけ参考にします。")
+st.subheader("Step 2: デザイン参照画像セット（ジャンル別に保存・再利用）")
 
-uploaded_files = st.file_uploader(
-    "デザイン参照画像（複数選択）",
-    type=["jpg", "jpeg", "png"],
-    accept_multiple_files=True,
-    key="prc_design_uploader",
-    help="過去のヒットPRカルーセル一式（4-7枚）をまとめてアップロード。順番通りに選択するとベスト。",
-)
+if not st.session_state.current_site:
+    st.warning(
+        "⚠️ サイドバーで **ジャンル/案件を選択** してください。\n"
+        "選択中のジャンルに参照画像を保存します（次回以降は選ぶだけで再利用可能）。\n"
+        "未登録なら「サイト設定」ページで新規作成してください。"
+    )
+else:
+    site_name = st.session_state.current_site
+    cm_pr = get_cm()
 
-if uploaded_files:
-    new_images = []
-    for f in uploaded_files:
-        try:
-            img = Image.open(f).convert("RGB")
-            new_images.append(img)
-        except Exception as e:
-            st.warning(f"{f.name} の読み込みに失敗: {e}")
-    if new_images:
-        st.session_state.prc_design_ref_images = new_images
+    # 既存のPR用参照画像を読み込み
+    pr_ref_keys = cm_pr.list_reference_images(site_name, category="pr")
+    if pr_ref_keys and not st.session_state.prc_design_ref_images:
+        # session_stateにロード
+        st.session_state.prc_design_ref_images = cm_pr.get_reference_pil_images(site_name, category="pr")
 
-if st.session_state.prc_design_ref_images:
-    imgs = st.session_state.prc_design_ref_images
-    st.success(f"デザイン参照画像: {len(imgs)} 枚アップロード済み")
-    cols = st.columns(min(len(imgs), 6))
-    for i, img in enumerate(imgs):
-        with cols[i % 6]:
-            st.image(img, caption=f"PR-{i+1}", use_container_width=True)
+    pr_ref_images_now = st.session_state.prc_design_ref_images or []
+    if pr_ref_images_now:
+        st.success(f"「{site_name}」のPR参照画像: {len(pr_ref_images_now)} 枚登録済み")
+        cols = st.columns(min(len(pr_ref_images_now), 6))
+        for i, img in enumerate(pr_ref_images_now):
+            with cols[i % 6]:
+                st.image(img, caption=f"PR-{i+1}", use_container_width=True)
+    else:
+        st.info(f"「{site_name}」にPR用参照画像が未登録です。下からアップロードしてください。")
+
+    with st.expander("📤 PR用参照画像をアップロード / 入れ替え", expanded=not pr_ref_images_now):
+        st.caption("過去のヒットPRカルーセル6-7枚をまとめてアップロード（順番通りに）。このジャンルに永続保存され、次回以降は自動で読み込まれます。")
+        uploaded_files = st.file_uploader(
+            "PR参照画像（複数選択・順番通り）",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="prc_design_uploader",
+        )
+        c_up1, c_up2 = st.columns([1, 1])
+        with c_up1:
+            if st.button("💾 アップロードしたものを保存（上書き）", disabled=not uploaded_files, key="prc_save_uploads"):
+                # 既存のPR参照画像を全削除してから新規保存
+                for k in cm_pr.list_reference_images(site_name, category="pr"):
+                    cm_pr.delete_reference_image(k)
+                # 新規保存
+                new_imgs = []
+                for f in uploaded_files:
+                    try:
+                        cm_pr.add_reference_image(site_name, f.name, f.getvalue(), category="pr")
+                        new_imgs.append(Image.open(f).convert("RGB"))
+                    except Exception as e:
+                        st.warning(f"{f.name} の保存失敗: {e}")
+                st.session_state.prc_design_ref_images = new_imgs
+                st.success(f"PR参照画像 {len(new_imgs)} 枚を保存しました。")
+                st.rerun()
+        with c_up2:
+            if st.button("🗑️ 全削除（このジャンルのPR参照画像）", disabled=not pr_ref_images_now, key="prc_clear_refs"):
+                for k in cm_pr.list_reference_images(site_name, category="pr"):
+                    cm_pr.delete_reference_image(k)
+                st.session_state.prc_design_ref_images = []
+                st.session_state.prc_design_structure = None
+                st.success("全削除しました。")
+                st.rerun()
 
     # 構造抽出
-    if st.button("🔍 デザイン構造をGemini Visionで抽出", use_container_width=False, key="prc_extract_structure"):
-        with st.status("構造抽出中...", expanded=True) as status:
-            try:
-                gemini = GeminiClient(api_key=st.session_state.api_key)
-                struct_prompt = render_pr_carousel_structure_prompt()
-                resp = gemini.analyze_with_images(struct_prompt, imgs)
-                structure = _extract_json_obj(resp)
-                if structure:
-                    st.session_state.prc_design_structure = structure
-                    status.update(label="構造抽出完了", state="complete")
-                else:
-                    status.update(label="JSON解析失敗", state="error")
-                    st.error("Geminiの応答からJSONを抽出できませんでした。")
-            except Exception as e:
-                status.update(label="エラー", state="error")
-                st.error(f"エラー: {e}")
+    if pr_ref_images_now:
+        if st.button("🔍 デザイン構造をGemini Visionで抽出", key="prc_extract_structure"):
+            with st.status("構造抽出中...", expanded=True) as status:
+                try:
+                    gemini = GeminiClient(api_key=st.session_state.api_key)
+                    struct_prompt = render_pr_carousel_structure_prompt()
+                    resp = gemini.analyze_with_images(struct_prompt, pr_ref_images_now)
+                    structure = _extract_json_obj(resp)
+                    if structure:
+                        st.session_state.prc_design_structure = structure
+                        status.update(label="構造抽出完了", state="complete")
+                    else:
+                        status.update(label="JSON解析失敗", state="error")
+                        st.error("Geminiの応答からJSONを抽出できませんでした。")
+                except Exception as e:
+                    status.update(label="エラー", state="error")
+                    st.error(f"エラー: {e}")
 
-    if st.session_state.prc_design_structure:
-        with st.expander("抽出されたデザイン構造", expanded=False):
-            st.json(st.session_state.prc_design_structure)
+        if st.session_state.prc_design_structure:
+            with st.expander("抽出されたデザイン構造", expanded=False):
+                st.json(st.session_state.prc_design_structure)
 
 # =============================================================
-# Step 3: 商材情報
+# Step 3: 商材情報（LP取得時に自動入力済み。確認・調整できる）
 # =============================================================
 st.subheader("Step 3: 商材情報")
 
+# 自動抽出された生JSON があれば表示
+if st.session_state.prc_lp_product_info:
+    with st.expander("🤖 LPから自動抽出した商材情報（参考・生データ）", expanded=False):
+        st.json(st.session_state.prc_lp_product_info)
+    if st.button("📋 自動抽出結果でフォームを再生成（手動編集をリセット）", key="prc_resync_product"):
+        st.session_state.prc_product_info = format_product_info_for_proposal(st.session_state.prc_lp_product_info)
+        st.rerun()
+else:
+    st.caption("Step 1 で「URLから情報取得」すると、LP本文から商材情報が自動抽出されます。")
+
 product_info = st.text_area(
-    "商品名・主要訴求軸・価格・キャンペーン・想定される懸念（自由記述）",
+    "商材情報（自動入力済み。必要に応じて編集）",
     value=st.session_state.prc_product_info,
-    placeholder="""例:
+    placeholder="""URL未入力の場合は手入力。例:
 商品名: DHC BBクリーム
-主要訴求軸: 化粧下地・ファンデ・日焼け止め一体型 / 秒速美肌 / シミ小ジワをカバー
-価格: 通常 ¥2,200 → 初回 ¥1,100（50%OFF）
+主要訴求軸:
+  - 化粧下地・ファンデ・日焼け止め一体型
+  - 秒速美肌 / シミ小ジワをカバー
+価格: 通常 ¥2,200 / 初回特別 ¥1,100
 キャンペーン: 期間限定50%OFF + 送料無料
-想定懸念: 厚塗り感 / 肌に合うか不安 / 値段の妥当性
 """,
-    height=160,
+    height=240,
     key="prc_input_product",
 )
 st.session_state.prc_product_info = product_info

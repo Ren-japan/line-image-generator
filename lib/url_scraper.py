@@ -153,3 +153,35 @@ def fetch_lp_reference_images(url: str, max_count: int = 5) -> tuple[list[Image.
             deduped.append(u)
     images = download_pil_images(deduped, max_count=max_count)
     return images, metadata
+
+
+def fetch_lp_text_content(url: str, max_chars: int = 8000) -> str:
+    """LPのHTMLから本文テキストを抽出する（商材情報抽出用）。
+    
+    script/style/nav/footer を除外し、本文系タグ(p, h1-h6, li, span, div, td, dd, dt)から
+    テキストを抽出。max_chars で切り詰める（Geminiコンテキスト節約）。
+    """
+    resp = requests.get(url, headers=_HEADERS, timeout=_REQUEST_TIMEOUT, allow_redirects=True)
+    resp.raise_for_status()
+    if resp.encoding == "ISO-8859-1":
+        resp.encoding = resp.apparent_encoding
+    soup = BeautifulSoup(resp.text, "html.parser")
+
+    # 不要要素を除去
+    for tag in soup(["script", "style", "noscript", "iframe", "header", "nav", "footer"]):
+        tag.decompose()
+
+    # body内テキストを取得
+    body = soup.body or soup
+    text = body.get_text(separator="\n", strip=True)
+    # 重複改行を整理
+    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    # 重複行を除去（連続のみ）
+    deduped = []
+    prev = None
+    for line in lines:
+        if line != prev:
+            deduped.append(line)
+        prev = line
+    text = "\n".join(deduped)
+    return text[:max_chars]

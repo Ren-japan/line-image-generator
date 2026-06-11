@@ -1752,3 +1752,110 @@ def render_pr_carousel_slide_generation(
         image_width=image_width,
         image_height=image_height,
     )
+
+
+# =============================================================
+# 商材情報の構造化抽出（PRページStep3自動化用）
+# LP本文 + og_* メタ情報 → 商品名/特徴/価格/キャンペーン/懸念 をJSON化
+# =============================================================
+
+PRODUCT_INFO_EXTRACTION_TEMPLATE = """以下はLINE誘導先のLP（ランディングページ）の情報です。
+LPから商材情報を読み取り、PRバナー生成に使えるよう構造化してください。
+
+== LP情報 ==
+- ページタイトル: {page_title}
+- OG Title: {og_title}
+- OG Description: {og_description}
+
+== LP本文（抜粋）==
+{body_text}
+
+== 出力形式（JSON必須）==
+```json
+{{
+  "product_name": "商品名（最も推されている主商品）",
+  "product_category": "商品カテゴリ（例: 化粧品、サプリ、医療サービス、転職サービス）",
+  "key_features": [
+    "特徴1（例: 化粧下地・ファンデ・日焼け止め一体型）",
+    "特徴2",
+    "特徴3"
+  ],
+  "price_normal": "通常価格（円表記。不明なら空文字）",
+  "price_special": "特別価格・初回価格（円表記。不明なら空文字）",
+  "discount_rate": "値引き率（例: 20%OFF、半額）",
+  "campaign": "キャンペーン詳細（送料無料・期間限定・初回限定 等）",
+  "social_proof": "実績数字（累計販売数・満足度・利用者数 等）",
+  "authority_badges": [
+    "権威性バッジ（楽天N冠、医師監修、機能性表示食品 等）"
+  ],
+  "guarantees": "返金保証・解約しやすさ・サポート体制等の安心要素",
+  "likely_concerns": [
+    "想定される顧客の懸念1（例: 厚塗り感が出ないか）",
+    "懸念2（例: 自分の肌色に合うか）"
+  ],
+  "target_persona": "ターゲット層の推測（年代・性別・状況）"
+}}
+```
+
+== 抽出ルール ==
+- LP本文・OG情報から **明示的に書かれている情報** だけを抽出
+- 不明な項目は空文字 "" にする（憶測で埋めない）
+- 価格は税込/税抜の明記があればそのまま含める
+- 数字は単位付きで（「100万件」「90%」「¥2,200」）
+- 重要キーワードは元のLPの表現をそのまま使う（「秒速美肌」等のフックワードを保持）
+"""
+
+
+def render_product_info_extraction_prompt(
+    page_title: str = "",
+    og_title: str = "",
+    og_description: str = "",
+    body_text: str = "",
+) -> str:
+    """LP情報から商材情報を構造化抽出するプロンプト"""
+    return PRODUCT_INFO_EXTRACTION_TEMPLATE.format(
+        page_title=page_title or "（未取得）",
+        og_title=og_title or "（なし）",
+        og_description=og_description or "（なし）",
+        body_text=body_text[:6000] if body_text else "（本文取得失敗。og情報だけで判断してください）",
+    )
+
+
+def format_product_info_for_proposal(product_info: dict) -> str:
+    """抽出した商材情報を、文言設計プロンプト用のテキスト形式に整形する"""
+    lines = []
+    if product_info.get("product_name"):
+        lines.append(f"商品名: {product_info['product_name']}")
+    if product_info.get("product_category"):
+        lines.append(f"カテゴリ: {product_info['product_category']}")
+    features = product_info.get("key_features") or []
+    if features:
+        lines.append("主要訴求軸:")
+        for f in features:
+            lines.append(f"  - {f}")
+    if product_info.get("price_normal") or product_info.get("price_special"):
+        price_parts = []
+        if product_info.get("price_normal"):
+            price_parts.append(f"通常 {product_info['price_normal']}")
+        if product_info.get("price_special"):
+            price_parts.append(f"初回/特別 {product_info['price_special']}")
+        if product_info.get("discount_rate"):
+            price_parts.append(f"値引 {product_info['discount_rate']}")
+        lines.append(f"価格: {' / '.join(price_parts)}")
+    if product_info.get("campaign"):
+        lines.append(f"キャンペーン: {product_info['campaign']}")
+    if product_info.get("social_proof"):
+        lines.append(f"実績/社会的証明: {product_info['social_proof']}")
+    badges = product_info.get("authority_badges") or []
+    if badges:
+        lines.append(f"権威性バッジ: {', '.join(badges)}")
+    if product_info.get("guarantees"):
+        lines.append(f"安心要素: {product_info['guarantees']}")
+    concerns = product_info.get("likely_concerns") or []
+    if concerns:
+        lines.append("想定される顧客の懸念:")
+        for c in concerns:
+            lines.append(f"  - {c}")
+    if product_info.get("target_persona"):
+        lines.append(f"ターゲット層: {product_info['target_persona']}")
+    return "\n".join(lines) if lines else "（LP情報から商材情報を抽出できませんでした）"
