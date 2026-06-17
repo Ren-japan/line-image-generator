@@ -136,7 +136,7 @@ if st.button("URLから情報取得（画像＋商材情報を自動抽出）", 
             st.session_state.prc_lp_body_text = body_text
             st.write(f"  本文 {len(body_text)} 文字（JSレンダ系LPだと0でも続行）")
 
-            st.write("Step 3/3: 商材情報をGeminiで構造化抽出...")
+            st.write("Step 3/3: 商材情報をGeminiで構造化抽出（LP画像内の価格も読む）...")
             try:
                 gemini = GeminiClient(api_key=st.session_state.api_key)
                 extract_prompt = render_product_info_extraction_prompt(
@@ -145,7 +145,11 @@ if st.button("URLから情報取得（画像＋商材情報を自動抽出）", 
                     og_description=metadata.get("og_description", ""),
                     body_text=body_text,
                 )
-                resp = gemini.analyze_text(extract_prompt)
+                # LP画像があればVisionで画像内の価格・実績も読み取る。なければテキストのみ。
+                if images:
+                    resp = gemini.analyze_with_images(extract_prompt, images)
+                else:
+                    resp = gemini.analyze_text(extract_prompt)
                 product_info = _extract_json_obj(resp)
                 if product_info:
                     st.session_state.prc_lp_product_info = product_info
