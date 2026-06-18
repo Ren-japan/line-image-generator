@@ -67,8 +67,7 @@ pages = st.navigation(
             st.Page("pages/03_pr_generation.py", title="PR画像生成（URL→トンマナ）", icon="🎯"),
         ],
         "設定": [
-            st.Page("pages/04_site_settings.py", title="サイト設定", icon="⚙️"),
-            st.Page("pages/05_preset_management.py", title="プリセット管理", icon="🎨"),
+            st.Page("pages/04_site_settings.py", title="ジャンル設定", icon="🏷️"),
         ],
     }
 )
@@ -79,25 +78,25 @@ with st.sidebar:
     st.caption("PUバナーと診断カルーセルを自動生成")
     st.divider()
 
-    # サイト選択
+    # ジャンル選択
     cm = get_config_manager()
     sites = cm.list_sites()
 
     if sites:
-        site_options = ["-- サイト/案件を選択 --"] + sites
+        site_options = ["-- ジャンルを選択 --"] + sites
         current_idx = 0
         if st.session_state.current_site in sites:
             current_idx = sites.index(st.session_state.current_site) + 1
 
         selected = st.selectbox(
-            "対象サイト/案件",
+            "対象ジャンル",
             site_options,
             index=current_idx,
             key="sidebar_site_select",
-            help="ジャンル×案件単位で参照画像セットを登録し、テイストを揃えます",
+            help="ジャンル（案件）単位で参照画像とブランドカラーを登録し、テイストを揃えます",
         )
 
-        if selected != "-- サイト/案件を選択 --":
+        if selected != "-- ジャンルを選択 --":
             if st.session_state.current_site != selected:
                 st.session_state.current_site = selected
                 st.session_state.site_config = cm.load(selected)
@@ -106,7 +105,7 @@ with st.sidebar:
             st.session_state.current_site = None
             st.session_state.site_config = {}
     else:
-        st.info("サイト/案件が未登録です。\n「サイト設定」から登録してください。")
+        st.info("ジャンルが未登録です。\n「ジャンル設定」から登録してください。")
 
     # 現在のサイト情報表示
     if st.session_state.current_site:

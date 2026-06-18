@@ -131,7 +131,7 @@ def generate_carousel_slide(slide_type: str, slide_data: dict, slide_position: i
 st.title("🎠 診断カルーセル生成")
 
 if not st.session_state.current_site:
-    st.warning("サイドバーからサイト/案件を選択してください。")
+    st.warning("サイドバーからジャンルを選択してください。")
     st.stop()
 
 if not st.session_state.api_key:
@@ -144,7 +144,7 @@ if st.session_state.image_provider == "openai" and not st.session_state.openai_a
 
 config = st.session_state.site_config
 st.info(
-    f"対象サイト: **{config.get('brand_name', st.session_state.current_site)}** ／ "
+    f"対象ジャンル: **{config.get('brand_name', st.session_state.current_site)}** ／ "
     f"画像生成: **{provider_label(st.session_state.image_provider)}**"
 )
 
@@ -157,7 +157,7 @@ if carousel_ref_count > 0:
 elif default_ref_count > 0:
     st.info(f"カルーセル専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します")
 else:
-    st.warning("参照画像未登録。複数枚のトーン統一には参照画像必須レベル。「サイト設定」から category=carousel で登録推奨。")
+    st.warning("参照画像未登録。複数枚のトーン統一には参照画像必須レベル。「🏷️ ジャンル設定」→「🎠 診断カルーセル」タブ から登録推奨。")
 
 # =============================================================
 # Step 1: 診断テーマ入力

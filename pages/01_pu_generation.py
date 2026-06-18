@@ -125,7 +125,7 @@ def generate_pu_image(pu_proposal: dict, idx: int, config: dict, site_name: str,
 st.title("📣 PU画像生成")
 
 if not st.session_state.current_site:
-    st.warning("サイドバーからサイト/案件を選択してください。")
+    st.warning("サイドバーからジャンルを選択してください。")
     st.stop()
 
 if not st.session_state.api_key:
@@ -138,7 +138,7 @@ if st.session_state.image_provider == "openai" and not st.session_state.openai_a
 
 config = st.session_state.site_config
 st.info(
-    f"対象サイト: **{config.get('brand_name', st.session_state.current_site)}** ／ "
+    f"対象ジャンル: **{config.get('brand_name', st.session_state.current_site)}** ／ "
     f"画像生成: **{provider_label(st.session_state.image_provider)}**"
 )
 
@@ -149,9 +149,9 @@ default_ref_count = len(cm.list_reference_images(st.session_state.current_site))
 if pu_ref_count > 0:
     st.success(f"PU参照画像: {pu_ref_count}枚登録済み（PUカテゴリ）")
 elif default_ref_count > 0:
-    st.info(f"PU専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します（PU専用を「サイト設定」→ 参照画像 → category=pu で登録するとテイスト精度UP）")
+    st.info(f"PU専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します（「🏷️ ジャンル設定」→ 参照画像 → 「📣 PU用バナー」タブ で登録するとテイスト精度UP）")
 else:
-    st.warning("参照画像が未登録です。「サイト設定」から登録するとテイストが揃います（未登録でも生成可）。")
+    st.warning("参照画像が未登録です。「🏷️ ジャンル設定」→「📣 PU用バナー」タブ から登録するとテイストが揃います（未登録でも生成可）。")
 
 # =============================================================
 # Step 1: 訴求テーマ入力

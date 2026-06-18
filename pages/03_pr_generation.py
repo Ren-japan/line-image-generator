@@ -183,69 +183,39 @@ if st.session_state.prc_lp_metadata:
                     st.image(img, use_container_width=True)
 
 # =============================================================
-# Step 2: デザイン参照画像セット（ジャンル単位で管理）
+# Step 2: デザイン参照画像セット（ジャンル設定で登録したものを使用）
 # =============================================================
-st.subheader("Step 2: デザイン参照画像セット（ジャンル別に保存・再利用）")
+st.subheader("Step 2: デザイン参照画像セット")
 
 if not st.session_state.current_site:
     st.warning(
-        "⚠️ サイドバーで **ジャンル/案件を選択** してください。\n"
-        "選択中のジャンルに参照画像を保存します（次回以降は選ぶだけで再利用可能）。\n"
-        "未登録なら「サイト設定」ページで新規作成してください。"
+        "⚠️ サイドバーで **ジャンルを選択** してください。\n"
+        "そのジャンルに登録された「PR用参照画像」を使ってカルーセル構造を踏襲します。\n"
+        "未登録なら「🏷️ ジャンル設定」ページで作成し、PR用参照画像を登録してください。"
     )
 else:
     site_name = st.session_state.current_site
     cm_pr = get_cm()
 
-    # 既存のPR用参照画像を読み込み
+    # ジャンル設定で登録された PR用参照画像 を読み込み
     pr_ref_keys = cm_pr.list_reference_images(site_name, category="pr")
-    if pr_ref_keys and not st.session_state.prc_design_ref_images:
-        # session_stateにロード
+    if pr_ref_keys:
         st.session_state.prc_design_ref_images = cm_pr.get_reference_pil_images(site_name, category="pr")
+    else:
+        st.session_state.prc_design_ref_images = []
 
     pr_ref_images_now = st.session_state.prc_design_ref_images or []
     if pr_ref_images_now:
-        st.success(f"「{site_name}」のPR参照画像: {len(pr_ref_images_now)} 枚登録済み")
+        st.success(f"「{site_name}」のPR参照画像: {len(pr_ref_images_now)} 枚（ジャンル設定で登録済み）")
         cols = st.columns(min(len(pr_ref_images_now), 6))
         for i, img in enumerate(pr_ref_images_now):
             with cols[i % 6]:
                 st.image(img, caption=f"PR-{i+1}", use_container_width=True)
     else:
-        st.info(f"「{site_name}」にPR用参照画像が未登録です。下からアップロードしてください。")
-
-    with st.expander("📤 PR用参照画像をアップロード / 入れ替え", expanded=not pr_ref_images_now):
-        st.caption("過去のヒットPRカルーセル6-7枚をまとめてアップロード（順番通りに）。このジャンルに永続保存され、次回以降は自動で読み込まれます。")
-        uploaded_files = st.file_uploader(
-            "PR参照画像（複数選択・順番通り）",
-            type=["jpg", "jpeg", "png"],
-            accept_multiple_files=True,
-            key="prc_design_uploader",
+        st.warning(
+            f"「{site_name}」に **PR用参照画像が未登録** です。\n"
+            "「🏷️ ジャンル設定」→ 該当ジャンル → 参照画像 → 「🎯 PR用カルーセル」タブ から登録してください。"
         )
-        c_up1, c_up2 = st.columns([1, 1])
-        with c_up1:
-            if st.button("💾 アップロードしたものを保存（上書き）", disabled=not uploaded_files, key="prc_save_uploads"):
-                # 既存のPR参照画像を全削除してから新規保存
-                for k in cm_pr.list_reference_images(site_name, category="pr"):
-                    cm_pr.delete_reference_image(k)
-                # 新規保存
-                new_imgs = []
-                for f in uploaded_files:
-                    try:
-                        cm_pr.add_reference_image(site_name, f.name, f.getvalue(), category="pr")
-                        new_imgs.append(Image.open(f).convert("RGB"))
-                    except Exception as e:
-                        st.warning(f"{f.name} の保存失敗: {e}")
-                st.session_state.prc_design_ref_images = new_imgs
-                st.success(f"PR参照画像 {len(new_imgs)} 枚を保存しました。")
-                st.rerun()
-        with c_up2:
-            if st.button("🗑️ 全削除（このジャンルのPR参照画像）", disabled=not pr_ref_images_now, key="prc_clear_refs"):
-                for k in cm_pr.list_reference_images(site_name, category="pr"):
-                    cm_pr.delete_reference_image(k)
-                st.session_state.prc_design_ref_images = []
-                st.session_state.prc_design_structure = None
-                st.success("全削除しました。")
-                st.rerun()
 
     # 構造抽出
     if pr_ref_images_now:
