@@ -92,6 +92,10 @@ class OpenAIImageClient:
             (生成画像, レスポンステキスト) のタプル。
             OpenAI は revised_prompt 以外のテキストを返さないので、第2要素は revised_prompt または None。
         """
+        # 全生成プロンプトにハードルールを物理注入（2026-07-06 ren恒久指示）
+        from lib.prompt_templates import append_hard_rules
+        prompt = append_hard_rules(prompt)
+
         size = _to_openai_size(aspect_ratio)
         quality = _to_openai_quality(image_size)
 

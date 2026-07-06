@@ -75,6 +75,10 @@ class GeminiClient:
         Returns:
             (生成画像, レスポンステキスト) のタプル
         """
+        # 全生成プロンプトにハードルールを物理注入（2026-07-06 ren恒久指示）
+        from lib.prompt_templates import append_hard_rules
+        prompt = append_hard_rules(prompt)
+
         # 参照画像 → プロンプトの順でcontentsを組み立て
         # （参照画像を先に見せてからテキスト指示を与えることでスタイル模倣が効きやすくなる）
         contents: list = []
