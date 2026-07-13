@@ -1910,3 +1910,63 @@ def render_json_image_prompt(spec: dict) -> str:
         "prohibitionsは絶対遵守。\n\n"
         + _json.dumps(spec, ensure_ascii=False, indent=2)
     )
+
+
+# =============================================================
+# LINE配信カードの標準生成レシピ（2026-07-13 ren確定・固定）
+# JSON構造化プロンプト＋design_details（装飾密度）＋人間実物参照の3点セット。
+# 実績: 薬MCVリテ5枚が全て一発合格（高密度レイアウト崩れゼロ・「手抜き感」解消）。
+# 使い方:
+#   spec = build_line_card_spec(text_elements=[...], illustration_spec="...")
+#   prompt = render_json_image_prompt(spec)
+#   client.generate_image(prompt, reference_images=[人間実物のみ], aspect_ratio="2:3")
+# =============================================================
+
+LINE_CARD_SPEC_BASE = {
+    "task": "LINE配信用リッチメッセージ画像（縦長・日本語・1枚単発）",
+    "reference_usage": "参照画像は人間のデザイナー制作の実物。配色・タイポグラフィ・イラストタッチ・紙面の密度感を忠実に再現する。参照内の文言・価格は絶対に描かない",
+    "style": {
+        "palette": "コーラルピンク×クリーム系のやさしい暖色",
+        "tone": "押さない・売り込まない。ただし紙面はプロのデザイナーが作り込んだ密度にする（余白だらけの簡素なスライドにしない）",
+        "illustration": "繊細な線・丁寧な陰影の線画（参照の人物タッチに厳密に合わせる）。私服。点目の記号顔・水彩・アニメ顔・リアル調は禁止",
+    },
+    "design_details": [
+        "ドン見出しのキーワードに蛍光マーカー風の下線 or 色付き帯（参照実物のタイポ装飾を踏襲）",
+        "白カードは角丸＋ごく淡いソフトシャドウ＋左端に丸いアイコンバッジ（テーマに合う線画アイコン）",
+        "セクションの区切りに点線 or 細い仕切り線",
+        "背景の上下に淡い曲線・波形のあしらい（コーラル淡色。キラキラは禁止）",
+        "キーワード・数字はコーラル太字で部分強調（1ゾーン1箇所まで）",
+        "余白が大きく空くレイアウトは禁止。要素間の間隔を詰めて情報密度を出す",
+    ],
+    "layout_zones": {
+        "top_25pct": "ドン見出し（結論1本・最大2行・最大級の文字サイズ）",
+        "middle_55pct": "主役コンテンツ＋サブコピー",
+        "bottom_20pct": "控えめなCTA帯（細い帯＋テキスト1行＋『＞』。緑の大ボタン・バッジは禁止）",
+    },
+    "prohibitions": [
+        "text_elements以外の文字を描かない（単語の重複・勝手な帯・キャッチコピー追加禁止）",
+        "キラキラ・十字の輝きを背景に散らさない",
+        "警告色（赤・黄の強い面）を使わない",
+        "ビフォーアフター的な体型描写・体重数値を描かない",
+        "「今だけ」等の期間・在庫の限定表現を入れない",
+        "手指は解剖学的に正しく（左右の手を間違えない・指5本）",
+    ],
+}
+
+
+def build_line_card_spec(text_elements, illustration_spec="", extra_prohibitions=None, overrides=None):
+    """標準レシピにカード固有の要素を合成してJSON仕様dictを返す。
+    text_elements: [{"zone","role","text","style"}] のリスト（textは一字一句描画される）
+    illustration_spec: このカードのイラスト指示（シリーズ内でシーンは1枚ごとに変えること）
+    extra_prohibitions: 案件固有の禁止（例: クーポン券風デザイン禁止）
+    overrides: layout_zones等を差し替えたい場合のdict（例: カルーセルCTAカードのフッター）"""
+    import copy
+    spec = copy.deepcopy(LINE_CARD_SPEC_BASE)
+    spec["text_elements"] = text_elements
+    if illustration_spec:
+        spec["illustration_spec"] = illustration_spec
+    if extra_prohibitions:
+        spec["prohibitions"] = spec["prohibitions"] + list(extra_prohibitions)
+    if overrides:
+        spec.update(overrides)
+    return spec
