@@ -1891,3 +1891,22 @@ def append_hard_rules(prompt: str) -> str:
     if "【システム共通ルール" in prompt:
         return prompt
     return prompt.rstrip() + "\n" + LINE_IMAGE_HARD_RULES
+
+
+# =============================================================
+# JSON構造化プロンプト（2026-07-13 ren採用手法）
+# 出典: X @gibkun1「JSON形式でプロンプトを出力してから画像生成すると
+# クオリティが段違いに上がる」→ 薬MCVリテP4/P5で実証（注記5行の高密度
+# レイアウトでも崩れゼロ・一発合格）。以後の画像生成はJSON形式を推奨。
+# =============================================================
+
+def render_json_image_prompt(spec: dict) -> str:
+    """画像仕様dict（task/style/layout_zones/text_elements/prohibitions等）を
+    JSON構造化プロンプトに変換する。text_elementsのtextは一字一句描画される前提で書くこと。"""
+    import json as _json
+    return (
+        "以下のJSON仕様に厳密に従って画像を1枚生成してください。"
+        "text_elementsの文字列は一字一句正確に描画し、それ以外の文字は描かない。"
+        "prohibitionsは絶対遵守。\n\n"
+        + _json.dumps(spec, ensure_ascii=False, indent=2)
+    )
