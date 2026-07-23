@@ -14,7 +14,6 @@ from lib.image_generator import get_image_client, provider_label
 from lib.prompt_templates import render_pu_proposal_prompt, render_pu_generation_prompt
 from lib.image_postprocessor import (
     trim_whitespace,
-    resize_to_target,
     image_to_bytes,
 )
 

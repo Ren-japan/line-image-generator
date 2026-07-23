@@ -24,7 +24,7 @@ st.set_page_config(
 )
 
 # ----- マネージャーは lib/dependencies.py から取得 -----
-from lib.dependencies import get_config_manager, get_preset_manager
+from lib.dependencies import get_config_manager
 
 
 # ----- セッションステート初期化 -----

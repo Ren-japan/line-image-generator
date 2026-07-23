@@ -17,7 +17,6 @@ from dotenv import load_dotenv
 
 from lib.storage import LocalStorage, StorageBackend
 from lib.config_manager import ConfigManager
-from lib.preset_manager import PresetManager
 
 PROJECT_ROOT = Path(__file__).parent.parent
 load_dotenv(PROJECT_ROOT / ".env")
@@ -62,15 +61,9 @@ def get_storage():
 
 # 後方互換エイリアス
 get_config_storage = get_storage
-get_preset_storage = get_storage
 get_output_storage = get_storage
 
 
 @st.cache_resource
 def get_config_manager():
     return ConfigManager(get_config_storage())
-
-
-@st.cache_resource
-def get_preset_manager():
-    return PresetManager(get_preset_storage())
