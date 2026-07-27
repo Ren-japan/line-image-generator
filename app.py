@@ -65,6 +65,7 @@ pages = st.navigation(
             st.Page("pages/01_pu_generation.py", title="PU画像生成", icon="📣", default=True),
             st.Page("pages/02_carousel_generation.py", title="カルーセル生成", icon="🎠"),
             st.Page("pages/03_pr_generation.py", title="PR画像生成（URL→トンマナ）", icon="🎯"),
+            st.Page("pages/05_diagnosis_brief.py", title="設計書・依頼書生成", icon="📋"),
         ],
         "設定": [
             st.Page("pages/04_site_settings.py", title="ジャンル設定", icon="🏷️"),
