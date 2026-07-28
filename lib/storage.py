@@ -140,14 +140,26 @@ class GitSyncStorage(LocalStorage):
         self._repo_url = repo_url
         self.pull_latest()
 
+    def _redact(self, args) -> list[str]:
+        """ログ出力用: push URLに埋め込んだトークンを隠す"""
+        return [a.replace(self._token, "***") if self._token and self._token in a else a for a in args]
+
     def _run_git(self, *args, timeout: int = 30):
         import subprocess
+        import sys
         try:
-            return subprocess.run(
+            result = subprocess.run(
                 ["git", *args], cwd=str(self.base_dir),
                 capture_output=True, text=True, timeout=timeout,
             )
-        except Exception:
+            print(
+                f"[GitSyncStorage] git {' '.join(self._redact(args))} "
+                f"-> rc={result.returncode} stderr={result.stderr.strip()[-300:]}",
+                file=sys.stderr,
+            )
+            return result
+        except Exception as e:
+            print(f"[GitSyncStorage] git {' '.join(self._redact(args))} -> 実行失敗: {e}", file=sys.stderr)
             return None
 
     def _push_url(self) -> str | None:
