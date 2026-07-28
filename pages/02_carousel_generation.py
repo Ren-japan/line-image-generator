@@ -72,6 +72,11 @@ def _build_slide_content(slide_type: str, slide_data: dict, slide_position: int 
     return ""
 
 
+# スライド種別ごとに参照画像カテゴリを分ける（表紙・設問・結果はデザインが
+# 大きく異なることがあるため。2026-07-28 Noa指摘）
+SLIDE_TYPE_TO_CATEGORY = {"表紙": "cover", "設問": "questions", "結果": "result"}
+
+
 def generate_carousel_slide(slide_type: str, slide_data: dict, slide_position: int,
                             total_slides: int, config: dict, site_name: str,
                             image_width: int, image_height: int, aspect_ratio: str):
@@ -82,11 +87,12 @@ def generate_carousel_slide(slide_type: str, slide_data: dict, slide_position: i
         openai_api_key=st.session_state.openai_api_key,
     )
 
-    # カルーセル参照画像（全枚統一のため同じセットを毎回使う）
+    # スライド種別ごとの参照画像（表紙/設問/結果で別セット）
     cm = get_cm()
+    category = SLIDE_TYPE_TO_CATEGORY.get(slide_type, "questions")
     ref_images = []
     if site_name:
-        ref_images = cm.get_reference_pil_images(site_name, category="carousel")
+        ref_images = cm.get_reference_pil_images(site_name, category=category)
         if not ref_images:
             # フォールバック: 通常 reference_images
             ref_images = cm.get_reference_pil_images(site_name)
@@ -148,16 +154,31 @@ st.info(
     f"画像生成: **{provider_label(st.session_state.image_provider)}**"
 )
 
-# 参照画像状況
+# 参照画像状況（表紙・設問・結果は別セット）
 cm = get_cm()
-carousel_ref_count = len(cm.list_reference_images(st.session_state.current_site, category="carousel"))
-default_ref_count = len(cm.list_reference_images(st.session_state.current_site))
-if carousel_ref_count > 0:
-    st.success(f"カルーセル参照画像: {carousel_ref_count}枚登録済み（全スライドで使い回しトーン統一）")
+site_name_check = st.session_state.current_site
+cat_labels = {"cover": "表紙", "questions": "設問", "result": "結果"}
+ref_counts = {
+    cat: len(cm.list_reference_images(site_name_check, category=cat))
+    for cat in cat_labels
+}
+default_ref_count = len(cm.list_reference_images(site_name_check))
+if all(ref_counts.values()):
+    st.success(
+        "参照画像登録済み： "
+        + " / ".join(f"{label}{ref_counts[cat]}枚" for cat, label in cat_labels.items())
+    )
+elif any(ref_counts.values()):
+    missing = [label for cat, label in cat_labels.items() if not ref_counts[cat]]
+    st.warning(
+        f"一部未登録（{'・'.join(missing)}）。未登録の種類は"
+        + (f"通常参照画像{default_ref_count}枚を流用します。" if default_ref_count else "参照画像なしで生成します。")
+        + "「🏷️ ジャンル設定」→ 該当タブ から登録推奨。"
+    )
 elif default_ref_count > 0:
-    st.info(f"カルーセル専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します")
+    st.info(f"表紙/設問/結果 専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します")
 else:
-    st.warning("参照画像未登録。複数枚のトーン統一には参照画像必須レベル。「🏷️ ジャンル設定」→「🎠 診断カルーセル」タブ から登録推奨。")
+    st.warning("参照画像未登録。複数枚のトーン統一には参照画像必須レベル。「🏷️ ジャンル設定」→「📔表紙」「❓設問」「🏁結果」タブ から登録推奨。")
 
 # =============================================================
 # Step 1: 診断テーマ入力
