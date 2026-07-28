@@ -78,6 +78,10 @@ pages = st.navigation(
 with st.sidebar:
     st.markdown("### 💬 LINE Image Generator")
     st.caption("PUバナーと診断カルーセルを自動生成")
+
+    from lib.dependencies import get_storage_backend_status
+    st.caption(f"保存先: {get_storage_backend_status()}")
+
     st.divider()
 
     # ジャンル選択

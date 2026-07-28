@@ -28,15 +28,19 @@ load_dotenv(PROJECT_ROOT / ".env")
 
 
 def _get_secret(key: str) -> str | None:
-    """環境変数 or st.secrets から値を取得（Cloud/ローカル両対応）"""
+    """環境変数 or st.secrets から値を取得（Cloud/ローカル両対応）。
+    st.secretsへのアクセス自体が失敗する場合（Secrets全体のTOML構文エラー等）は
+    ログに出す。ここを握りつぶすと「設定したはずのSecretsが静かに無視される」
+    事故に気づけなくなる（2026-07-28 実際に発生・原因特定に苦労した教訓）。"""
     val = os.getenv(key)
     if val:
         return val
     try:
         if key in st.secrets:
             return st.secrets[key]
-    except Exception:
-        pass
+    except Exception as e:
+        import sys
+        print(f"[dependencies] st.secrets へのアクセスに失敗しました（key={key}）: {e}", file=sys.stderr)
     return None
 
 
@@ -48,6 +52,16 @@ def _use_git_sync() -> bool:
 def _use_google_drive() -> bool:
     """Google Drive ストレージを使うかどうか"""
     return bool(_get_secret("GOOGLE_DRIVE_FOLDER_ID"))
+
+
+def get_storage_backend_status() -> str:
+    """現在有効な設定・参照画像ストレージの種類（サイドバー等での常時表示用）。
+    「設定したつもりが実は効いてない」を見えなくしない目的（2026-07-28追加）。"""
+    if _use_git_sync():
+        return "🐙 GitHub自動保存 — コード更新後も残ります"
+    if _use_google_drive():
+        return "☁️ Google Drive保存 — コード更新後も残ります"
+    return "⚠️ ローカル一時保存 — コード更新のたびに消えます"
 
 
 @st.cache_resource
