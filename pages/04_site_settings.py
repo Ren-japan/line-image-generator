@@ -18,9 +18,9 @@ def get_cm():
 # 参照画像のカテゴリ定義（LINE版）
 REF_CATEGORIES = [
     {"key": "pu", "icon": "📣", "label": "PU用バナー", "help": "「問いかけ＋はい/いいえ」型のプッシュアップバナーの参照デザイン。1枚もの。"},
-    {"key": "pr", "icon": "🎯", "label": "PR用カルーセル", "help": "6〜7枚で1ストーリーのPRカルーセルの参照デザイン。順番通りにアップロード。"},
+    {"key": "pr", "icon": "🎯", "label": "PR用カルーセル", "help": "6〜7枚で1ストーリーのPRカルーセルの参照デザイン。順番通りにアップロード。", "patterned": True},
     {"key": "carousel", "icon": "🎠", "label": "診断カルーセル", "help": "診断（表紙→設問→結果）カルーセルの参照デザイン。"},
-    {"key": "result_carousel", "icon": "🏆", "label": "結果カルーセル", "help": "診断結果（タイプ発表→根拠→解決策→CTA等）カード群の参照デザイン。タイプ別に複数枚組で使う。"},
+    {"key": "result_carousel", "icon": "🏆", "label": "結果カルーセル", "help": "診断結果（タイプ発表→根拠→解決策→CTA等）カード群の参照デザイン。タイプ別に複数枚組で使う。", "patterned": True},
 ]
 
 
@@ -68,6 +68,84 @@ def render_ref_image_tab(cm, site_name, cat):
             for k in cm.list_reference_images(site_name, category=key):
                 cm.delete_reference_image(k)
             st.success(f"{label} を全削除しました")
+            st.rerun()
+
+
+def render_patterned_ref_image_tab(cm, site_name, cat):
+    """商材・タイプ別に複数パターンを持てるカテゴリ（PR・結果カルーセル）用のUI。
+    パターン名ごとに参照画像セットを分けて管理し、生成ページ側でパターンを選べるようにする。"""
+    key = cat["key"]
+    label = f"{cat['icon']} {cat['label']}"
+    st.caption(cat["help"] + "（このカテゴリは商材・タイプごとに複数パターンを登録できます）")
+
+    patterns = cm.list_reference_patterns(site_name, key)
+
+    if not patterns:
+        st.info(f"{label}: パターン未登録です。下から新しいパターンを追加してください。")
+    for pattern in patterns:
+        pattern_keys = cm.list_reference_images(site_name, category=key, preset_id=pattern)
+        with st.expander(f"📁 {pattern}（{len(pattern_keys)}枚）", expanded=False):
+            imgs = cm.get_reference_pil_images(site_name, category=key, preset_id=pattern)
+            if imgs:
+                cols = st.columns(min(len(imgs), 6))
+                for i, img in enumerate(imgs):
+                    with cols[i % 6]:
+                        st.image(img, caption=f"{i+1}", use_container_width=True)
+
+            uploaded = st.file_uploader(
+                "画像を差し替え（複数可・順番通り）",
+                type=["jpg", "jpeg", "png"],
+                accept_multiple_files=True,
+                key=f"uploader_{site_name}_{key}_{pattern}",
+            )
+            pc1, pc2 = st.columns(2)
+            with pc1:
+                if st.button("💾 保存（上書き）", disabled=not uploaded, key=f"save_{site_name}_{key}_{pattern}"):
+                    cm.delete_reference_pattern(site_name, key, pattern)
+                    saved = 0
+                    for f in uploaded:
+                        try:
+                            cm.add_reference_image(site_name, f.name, f.getvalue(), category=key, preset_id=pattern)
+                            saved += 1
+                        except Exception as e:
+                            st.warning(f"{f.name} 保存失敗: {e}")
+                    st.success(f"「{pattern}」を {saved}枚 保存しました")
+                    st.rerun()
+            with pc2:
+                if st.button(f"🗑️ 「{pattern}」を削除", key=f"delete_pattern_{site_name}_{key}_{pattern}"):
+                    cm.delete_reference_pattern(site_name, key, pattern)
+                    st.success(f"「{pattern}」を削除しました")
+                    st.rerun()
+
+    st.divider()
+    st.markdown("**+ 新しいパターンを追加**")
+    new_pattern_name = st.text_input(
+        "パターン名（例: 価格訴求型・口コミ訴求型 等）", key=f"new_pattern_name_{site_name}_{key}",
+    )
+    new_pattern_files = st.file_uploader(
+        "参照画像（複数可・順番通り）",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+        key=f"new_pattern_files_{site_name}_{key}",
+    )
+    if st.button(
+        "➕ パターンを追加",
+        disabled=not (new_pattern_name.strip() and new_pattern_files),
+        key=f"add_pattern_{site_name}_{key}",
+    ):
+        if new_pattern_name.strip() in patterns:
+            st.error(f"「{new_pattern_name.strip()}」は既に存在します。上のパターンから編集してください。")
+        else:
+            saved = 0
+            for f in new_pattern_files:
+                try:
+                    cm.add_reference_image(
+                        site_name, f.name, f.getvalue(), category=key, preset_id=new_pattern_name.strip(),
+                    )
+                    saved += 1
+                except Exception as e:
+                    st.warning(f"{f.name} 保存失敗: {e}")
+            st.success(f"「{new_pattern_name.strip()}」を {saved}枚 で登録しました")
             st.rerun()
 
 
@@ -202,7 +280,10 @@ with tab_edit:
         ref_tabs = st.tabs([f"{c['icon']} {c['label']}" for c in REF_CATEGORIES])
         for tab, cat in zip(ref_tabs, REF_CATEGORIES):
             with tab:
-                render_ref_image_tab(cm, site_name, cat)
+                if cat.get("patterned"):
+                    render_patterned_ref_image_tab(cm, site_name, cat)
+                else:
+                    render_ref_image_tab(cm, site_name, cat)
 
         st.divider()
 

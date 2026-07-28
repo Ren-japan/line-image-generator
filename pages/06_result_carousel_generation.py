@@ -37,7 +37,7 @@ def _save_to_storage(image, site_name: str, type_name: str, label: str):
 
 
 def generate_result_card(card, position, total, type_name, accent_color, config, site_name,
-                         image_width, image_height, aspect_ratio):
+                         image_width, image_height, aspect_ratio, pattern=None):
     image_client = get_image_client(
         provider=st.session_state.image_provider,
         gemini_api_key=st.session_state.api_key,
@@ -46,7 +46,7 @@ def generate_result_card(card, position, total, type_name, accent_color, config,
     cm = get_cm()
     ref_images = []
     if site_name:
-        ref_images = cm.get_reference_pil_images(site_name, category="result_carousel")
+        ref_images = cm.get_reference_pil_images(site_name, category="result_carousel", preset_id=pattern)
         if not ref_images:
             ref_images = cm.get_reference_pil_images(site_name)
 
@@ -108,14 +108,27 @@ st.info(
 )
 
 cm = get_cm()
-rc_ref_count = len(cm.list_reference_images(site_name, category="result_carousel"))
-default_ref_count = len(cm.list_reference_images(site_name))
-if rc_ref_count > 0:
-    st.success(f"結果カルーセル参照画像: {rc_ref_count}枚登録済み")
-elif default_ref_count > 0:
-    st.info(f"結果カルーセル専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します")
+
+# 結果カルーセルは同一ジャンル内でも商材・タイプ別に複数パターンを持てる
+rc_patterns = cm.list_reference_patterns(site_name, "result_carousel")
+selected_rc_pattern = None
+if rc_patterns:
+    selected_rc_pattern = st.selectbox(
+        "使用する結果カルーセルパターン（商材・タイプごとに登録された参照デザイン）",
+        rc_patterns,
+        key="rc_pattern_select",
+    )
+    rc_ref_count = len(cm.list_reference_images(site_name, category="result_carousel", preset_id=selected_rc_pattern))
+    st.success(f"「{selected_rc_pattern}」パターンの参照画像: {rc_ref_count}枚登録済み")
 else:
-    st.warning("参照画像未登録。「🏷️ジャンル設定」→「🏆結果カルーセル」タブから登録推奨。")
+    rc_ref_count = len(cm.list_reference_images(site_name, category="result_carousel"))
+    default_ref_count = len(cm.list_reference_images(site_name))
+    if rc_ref_count > 0:
+        st.success(f"結果カルーセル参照画像: {rc_ref_count}枚登録済み")
+    elif default_ref_count > 0:
+        st.info(f"結果カルーセル専用参照画像なし → 通常参照画像 {default_ref_count}枚を流用します")
+    else:
+        st.warning("参照画像未登録。「🏷️ジャンル設定」→「🏆結果カルーセル」タブからパターンを登録推奨。")
 
 # =============================================================
 # Step 1: タイプ別カード文言の入力
@@ -232,7 +245,7 @@ if st.button(f"🚀 全{total_cards_all}枚を一括生成", type="primary", use
             try:
                 gen_image, gen_text, gen_prompt, ref_count = generate_result_card(
                     card, position, total, t.get("name", ""), t.get("accent_color", ""),
-                    config, site_name, rc_width, rc_height, best_ar,
+                    config, site_name, rc_width, rc_height, best_ar, pattern=selected_rc_pattern,
                 )
                 if gen_image:
                     label = f"{position:02d}_{card.get('role', '')}"

@@ -75,13 +75,34 @@ class ConfigManager:
         return DEFAULT_CONFIG.copy()
 
     # =============================================
-    # サイト参照画像の管理（カテゴリ別: article / mv）
+    # サイト参照画像の管理（カテゴリ別: pu / pr / carousel / result_carousel）
+    # pr・result_carouselは同一ジャンル内でも商材・タイプ別に複数パターン
+    # (preset_id)を持てる。それ以外のカテゴリはジャンル1つ=1セットのまま。
     # =============================================
 
     def _ref_images_prefix(self, site_name: str, category: str = "article", preset_id: str | None = None) -> str:
-        if category == "mv" and preset_id:
-            return f"ref/{site_name}/mv/{preset_id}/"
+        if preset_id:
+            return f"ref/{site_name}/{category}/{preset_id}/"
         return f"ref/{site_name}/{category}/"
+
+    def list_reference_patterns(self, site_name: str, category: str) -> list[str]:
+        """そのカテゴリに登録済みのパターン名一覧を返す（preset_idのサブフォルダ名）。
+        パターン未登録（フラットに画像がある/何もない）場合は空リスト。"""
+        prefix = f"ref/{site_name}/{category}/"
+        keys = self.storage.list_keys(prefix=prefix)
+        patterns = []
+        for key in keys:
+            rest = key[len(prefix):]
+            if "/" in rest:
+                pattern = rest.split("/", 1)[0]
+                if pattern not in patterns:
+                    patterns.append(pattern)
+        return sorted(patterns)
+
+    def delete_reference_pattern(self, site_name: str, category: str, preset_id: str) -> None:
+        """1パターン分の参照画像をまとめて削除"""
+        for key in self.list_reference_images(site_name, category, preset_id):
+            self.storage.delete(key)
 
     def add_reference_image(self, site_name: str, filename: str, data: bytes, category: str = "article", preset_id: str | None = None) -> str:
         """参照画像を追加し、storage key を返す"""

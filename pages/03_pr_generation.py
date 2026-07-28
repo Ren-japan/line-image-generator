@@ -197,16 +197,33 @@ else:
     site_name = st.session_state.current_site
     cm_pr = get_cm()
 
-    # ジャンル設定で登録された PR用参照画像 を読み込み
-    pr_ref_keys = cm_pr.list_reference_images(site_name, category="pr")
-    if pr_ref_keys:
-        st.session_state.prc_design_ref_images = cm_pr.get_reference_pil_images(site_name, category="pr")
+    # PRは同一ジャンル内でも商材ごとに複数パターンを持てる。パターンがあれば選ばせる
+    pr_patterns = cm_pr.list_reference_patterns(site_name, "pr")
+    selected_pattern = None
+    if pr_patterns:
+        selected_pattern = st.selectbox(
+            "使用するPRパターン（商材・訴求軸ごとに登録された参照デザイン）",
+            pr_patterns,
+            key="prc_pattern_select",
+        )
+        if st.session_state.get("prc_pattern_active") != selected_pattern:
+            # パターンを切り替えたら、前のパターンで抽出した構造を持ち越さない
+            st.session_state.prc_design_structure = None
+            st.session_state.prc_pattern_active = selected_pattern
+        st.session_state.prc_design_ref_images = cm_pr.get_reference_pil_images(
+            site_name, category="pr", preset_id=selected_pattern,
+        )
     else:
-        st.session_state.prc_design_ref_images = []
+        # パターン未登録なら、フラットに登録された旧形式の参照画像にフォールバック
+        pr_ref_keys = cm_pr.list_reference_images(site_name, category="pr")
+        st.session_state.prc_design_ref_images = (
+            cm_pr.get_reference_pil_images(site_name, category="pr") if pr_ref_keys else []
+        )
 
     pr_ref_images_now = st.session_state.prc_design_ref_images or []
     if pr_ref_images_now:
-        st.success(f"「{site_name}」のPR参照画像: {len(pr_ref_images_now)} 枚（ジャンル設定で登録済み）")
+        pattern_label = f"「{selected_pattern}」パターン" if selected_pattern else ""
+        st.success(f"「{site_name}」のPR参照画像{pattern_label}: {len(pr_ref_images_now)} 枚")
         cols = st.columns(min(len(pr_ref_images_now), 6))
         for i, img in enumerate(pr_ref_images_now):
             with cols[i % 6]:
@@ -214,7 +231,7 @@ else:
     else:
         st.warning(
             f"「{site_name}」に **PR用参照画像が未登録** です。\n"
-            "「🏷️ ジャンル設定」→ 該当ジャンル → 参照画像 → 「🎯 PR用カルーセル」タブ から登録してください。"
+            "「🏷️ ジャンル設定」→ 該当ジャンル → 参照画像 → 「🎯 PR用カルーセル」タブ からパターンを登録してください。"
         )
 
     # 構造抽出
