@@ -2,9 +2,14 @@
 共有依存関係（マネージャーインスタンス）
 app.pyの再実行を避けるため、ページからはこのモジュール経由でマネージャーにアクセスする。
 
-ストレージバックエンド切り替え:
-  - GOOGLE_DRIVE_FOLDER_ID が設定されていれば Google Drive を使用
-  - 未設定ならローカルファイルシステム（従来どおり）
+設定・参照画像用ストレージ（get_config_storage）の切り替え優先順位:
+  1. GITHUB_TOKEN が設定されていれば、このリポジトリへgit自動push（Streamlit Cloud
+     再デプロイでも消えない。Google Cloud設定不要）
+  2. GOOGLE_DRIVE_FOLDER_ID が設定されていれば Google Drive を使用
+  3. どちらも未設定ならローカルファイルシステム（再デプロイで消える）
+
+生成画像用ストレージ（get_output_storage）は常にローカル（一時的。数が多く
+リポジトリ肥大化を避けるため、生成画像はgit同期の対象外）。
 """
 
 from __future__ import annotations
@@ -35,9 +40,21 @@ def _get_secret(key: str) -> str | None:
     return None
 
 
+def _use_git_sync() -> bool:
+    """gitへの自動push方式を使うかどうか"""
+    return bool(_get_secret("GITHUB_TOKEN"))
+
+
 def _use_google_drive() -> bool:
     """Google Drive ストレージを使うかどうか"""
     return bool(_get_secret("GOOGLE_DRIVE_FOLDER_ID"))
+
+
+@st.cache_resource
+def _get_git_sync_storage(token: str) -> StorageBackend:
+    """git自動push方式ストレージのシングルトン"""
+    from lib.storage import GitSyncStorage
+    return GitSyncStorage(PROJECT_ROOT, github_token=token)
 
 
 @st.cache_resource
@@ -52,16 +69,19 @@ def _get_drive_storage(folder_id: str) -> StorageBackend:
 
 
 @st.cache_resource
-def get_storage():
-    """全ストレージ共通: Drive or ローカル(プロジェクトルート)"""
+def get_config_storage():
+    """設定・参照画像用: git自動push > Google Drive > ローカル の優先順位"""
+    if _use_git_sync():
+        return _get_git_sync_storage(_get_secret("GITHUB_TOKEN"))
     if _use_google_drive():
         return _get_drive_storage(_get_secret("GOOGLE_DRIVE_FOLDER_ID"))
     return LocalStorage(PROJECT_ROOT)
 
 
-# 後方互換エイリアス
-get_config_storage = get_storage
-get_output_storage = get_storage
+@st.cache_resource
+def get_output_storage():
+    """生成画像用: 常にローカル（一時的。git同期の対象外）"""
+    return LocalStorage(PROJECT_ROOT)
 
 
 @st.cache_resource

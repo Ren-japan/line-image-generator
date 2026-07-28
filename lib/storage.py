@@ -119,6 +119,80 @@ class LocalStorage(StorageBackend):
         return self._resolve(key)
 
 
+class GitSyncStorage(LocalStorage):
+    """LocalStorage + 保存・削除のたびにgit commit & pushで永続化するストレージ。
+
+    Streamlit Cloudはpushのたびにコンテナを作り直すため、ローカルファイルシステム
+    への保存だけでは再デプロイで消えてしまう。ジャンル設定・参照画像自体をこの
+    リポジトリにコミットすることで、Google Drive等の外部ストレージなしで永続化する。
+    （生成画像はここでは扱わない。数が多くリポジトリが肥大化するため、生成画像は
+    従来通りの一時的なLocalStorageのまま運用する想定）
+
+    push認証はGITHUB_TOKENを都度のpush URLにその場で埋め込んで行う
+    （.git/configには保存しない・ログにも出さない）。git操作は全てbest-effort:
+    失敗してもローカル保存自体は成功として扱い、例外は出さない。
+    """
+
+    def __init__(self, base_dir: str | Path, github_token: str | None = None,
+                 repo_url: str = "github.com/Ren-japan/line-image-generator.git"):
+        super().__init__(base_dir)
+        self._token = github_token
+        self._repo_url = repo_url
+        self.pull_latest()
+
+    def _run_git(self, *args, timeout: int = 30):
+        import subprocess
+        try:
+            return subprocess.run(
+                ["git", *args], cwd=str(self.base_dir),
+                capture_output=True, text=True, timeout=timeout,
+            )
+        except Exception:
+            return None
+
+    def _push_url(self) -> str | None:
+        if not self._token:
+            return None
+        return f"https://x-access-token:{self._token}@{self._repo_url}"
+
+    def pull_latest(self) -> None:
+        """起動時に他セッションが保存した最新データを取り込む（失敗しても続行）"""
+        self._run_git("pull", "--rebase", "--autostash")
+
+    def _commit_and_push(self, key: str, message: str) -> None:
+        add = self._run_git("add", "--", key)
+        if add is None or add.returncode != 0:
+            return
+        diff = self._run_git("diff", "--cached", "--quiet")
+        if diff is not None and diff.returncode == 0:
+            return  # 差分なし
+        commit = self._run_git("commit", "-m", message)
+        if commit is None or commit.returncode != 0:
+            return
+        push_url = self._push_url()
+        if push_url:
+            self._run_git("push", push_url, "HEAD:main")
+        else:
+            self._run_git("push")
+
+    def save(self, key: str, data: bytes) -> str:
+        result = super().save(key, data)
+        self._commit_and_push(key, f"data: {key}")
+        return result
+
+    def save_text(self, key: str, text: str, encoding: str = "utf-8") -> str:
+        result = super().save_text(key, text, encoding=encoding)
+        self._commit_and_push(key, f"data: {key}")
+        return result
+
+    def delete(self, key: str) -> None:
+        path = self._resolve(key)
+        was_tracked = path.exists()
+        super().delete(key)
+        if was_tracked:
+            self._commit_and_push(key, f"delete: {key}")
+
+
 class GoogleDriveStorage(StorageBackend):
     """
     Google Drive ベースのストレージ。
