@@ -167,9 +167,18 @@ class GitSyncStorage(LocalStorage):
             return None
         return f"https://x-access-token:{self._token}@{self._repo_url}"
 
+    def _pull(self) -> None:
+        """origin remoteの認証情報が使えるとは限らない(Streamlit Cloud自身の
+        デプロイ用認証とは別物)ため、token埋め込みURLを明示的に使う。"""
+        push_url = self._push_url()
+        if push_url:
+            self._run_git("pull", "--rebase", "--autostash", push_url, "main")
+        else:
+            self._run_git("pull", "--rebase", "--autostash")
+
     def pull_latest(self) -> None:
-        """起動時に他セッションが保存した最新データを取り込む（失敗しても続行）"""
-        self._run_git("pull", "--rebase", "--autostash")
+        """起動時に他セッション/コード側のpushで進んだ最新データを取り込む（失敗しても続行）"""
+        self._pull()
 
     def _commit_and_push(self, key: str, message: str) -> None:
         add = self._run_git("add", "--", key)
@@ -181,11 +190,17 @@ class GitSyncStorage(LocalStorage):
         commit = self._run_git("commit", "-m", message)
         if commit is None or commit.returncode != 0:
             return
+
         push_url = self._push_url()
-        if push_url:
-            self._run_git("push", push_url, "HEAD:main")
-        else:
-            self._run_git("push")
+        # コード側のpush(開発者)とこのpush(アプリの自動保存)が同じブランチに
+        # 競合しうるため、pushが拒否されたら最新を取り込んで(rebase)から
+        # リトライする(最大3回)。無条件にpushだけしてrejectされたら諦める、
+        # という以前の実装がデータ消失の原因だった。
+        for _ in range(3):
+            result = self._run_git("push", push_url, "HEAD:main") if push_url else self._run_git("push")
+            if result is not None and result.returncode == 0:
+                return
+            self._pull()
 
     def save(self, key: str, data: bytes) -> str:
         result = super().save(key, data)
