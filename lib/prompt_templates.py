@@ -344,6 +344,102 @@ def render_carousel_slide_prompt(
 
 
 # =============================================================
+# LINE版: 結果カルーセル 用テンプレート
+# 診断確定後に表示する「タイプ発表→根拠→解決策→CTA」等のカード群。
+# タイプごとに複数枚組・複数タイプ分を生成する（診断カルーセルの表紙/設問とは別の参照画像セット）。
+# =============================================================
+
+RESULT_CARD_WITH_REF_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+添付の参照画像と同じデザインスタイル・レイアウト・配色・装飾で、診断結果カードを作成してください。
+
+【最重要原則】
+参照画像のスタイル（背景・カード・色・フォント・装飾）を完全にコピーすること。
+これは「{type_name}」タイプの結果カルーセル、全{total_cards}枚のうちの{card_position}枚目（役割: {card_role}）。
+同じタイプ内の{total_cards}枚で完全にトーンを統一すること。
+
+{color_instruction}
+
+== このカードの役割 ==
+{card_role}
+
+== 差し替えるテキスト内容 ==
+{card_text}
+
+== 厳守ルール ==
+- 上記のテキストの構造（チェックリスト☑・矢印図式→・成分リスト✓等の記号）をそのまま維持して描画
+- 参照画像にない要素は描画しない
+- テキストは{language}のみ
+"""
+
+
+RESULT_CARD_TEMPLATE = """【出力画像サイズ: {image_width}×{image_height}px】
+LINE診断の結果カード（「{type_name}」タイプ）を作成してください。
+これは全{total_cards}枚のうちの{card_position}枚目（役割: {card_role}）です。同じタイプ内で同じデザイントーンを保ってください。
+
+{color_instruction}
+
+== このカードの役割 ==
+{card_role}
+
+== テキスト内容 ==
+{card_text}
+
+== 画面構成 ==
+- 上部または中央にこのカードの主題（タイプ名・見出し等）
+- 本文はチェックリスト☑・矢印図式→・成分リスト✓等、テキスト内の記号構造に沿ったレイアウトで配置
+- 下部にCTA（ボタン等）があればそれも描画
+
+== 全テキスト ==
+{language}で記述。太めのゴシック体。視認性最優先。
+"""
+
+
+def render_result_card_prompt(
+    card_role: str,
+    card_text: str,
+    type_name: str,
+    card_position: int,
+    total_cards: int,
+    site_colors: dict | None = None,
+    language: str = "Japanese",
+    has_reference_images: bool = False,
+    image_width: int = 1080,
+    image_height: int = 1080,
+    accent_color: str | None = None,
+) -> str:
+    """結果カルーセルの1枚分（タイプ内の1カード）の生成プロンプトを組み立てる"""
+    colors = dict(site_colors or {})
+    if accent_color:
+        colors["accent_color"] = accent_color
+
+    if has_reference_images:
+        color_instruction = _build_line_color_instruction(colors, minimal=True)
+        return RESULT_CARD_WITH_REF_TEMPLATE.format(
+            color_instruction=color_instruction,
+            type_name=type_name,
+            card_role=card_role,
+            card_text=card_text,
+            card_position=card_position,
+            total_cards=total_cards,
+            language=language,
+            image_width=image_width,
+            image_height=image_height,
+        )
+    color_instruction = _build_line_color_instruction(colors)
+    return RESULT_CARD_TEMPLATE.format(
+        color_instruction=color_instruction,
+        type_name=type_name,
+        card_role=card_role,
+        card_text=card_text,
+        card_position=card_position,
+        total_cards=total_cards,
+        language=language,
+        image_width=image_width,
+        image_height=image_height,
+    )
+
+
+# =============================================================
 # LINE版: PR画像 用テンプレート
 # 遷移先LPのトンマナにスタイル合わせ。参照画像はLPのog:image+主要img
 # =============================================================
