@@ -144,12 +144,21 @@ class GitSyncStorage(LocalStorage):
         """ログ出力用: push URLに埋め込んだトークンを隠す"""
         return [a.replace(self._token, "***") if self._token and self._token in a else a for a in args]
 
+    # Streamlit Cloudのコンテナには git の user.name/user.email が設定されて
+    # おらず、commitが "Please tell me who you are"(rc=128)で毎回失敗していた
+    # (2026-07-28に実ログで確認)。-c オプションでコマンドごとに明示することで、
+    # コンテナ側のグローバル設定に依存しないようにする。
+    _GIT_IDENTITY = [
+        "-c", "user.name=line-image-generator bot",
+        "-c", "user.email=line-image-generator-bot@users.noreply.github.com",
+    ]
+
     def _run_git(self, *args, timeout: int = 30):
         import subprocess
         import sys
         try:
             result = subprocess.run(
-                ["git", *args], cwd=str(self.base_dir),
+                ["git", *self._GIT_IDENTITY, *args], cwd=str(self.base_dir),
                 capture_output=True, text=True, timeout=timeout,
             )
             print(
